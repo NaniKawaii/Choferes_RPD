@@ -1,0 +1,2 @@
+﻿ID_persona|Nombre|Departamento|Fecha|Primera_perforacion|Ultima_perforacion|Numero_perforaciones|Horas_reales_trabajo
+99999|Persona Falsa|Ops|2026/02/20|08:00|17:00|1|7

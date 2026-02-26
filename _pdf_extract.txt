@@ -1,0 +1,627 @@
+
+
+ 
+Especificación funcional + controles adicionales + modelo de datos (tablas)
+ 
+ 
+1. Objetivo y alcance
+ 
+Gestionar la bitácora de viajes y automatizar la liquidación del valor a pagar al 
+personal de carga 
+y descarga (estibadores), a partir de un archivo .txt de biométrico. El sistema controla rutas, 
+camiones, gastos, carga, estados del viaje y pagos, manteniendo trazabilidad y reportes. No 
+incluye GPS ni app móvil. La asignación de estibadores se genera únicamente desde el .txt: si no 
+marca, no se paga.
+ 
+2. Reglas operativas clave (para evitar ambigüedades)
+ 
+
+ 
+Fuente única de estibadores del día: archivo .txt del biométrico. No se permite agregar 
+estibadores manualmente.
+ 
+
+ 
+Sí se permite vincular (asignar) los estibadores detectados en el .txt a viajes ya registrados del 
+mismo día, porque el .txt no incluye camión/ruta.
+ 
+
+ 
+Sin par entrada
+-
+salida válido (según formato y reglas) y sin cumplir el mínimo de horas 
+configurado: no genera pago.
+ 
+
+ 
+Un viaje debe tener un Viaje ID único y un estado. Una liquidación/pago no puede 
+modificarse sin dejar evidencia (auditoría).
+ 
+
+ 
+Cuando un viaje esté en estado Liquidado/Pagado, su información crítica queda bloqueada 
+(solo ajustes mediante reverso controlado).
+ 
+3. Módulos del sistema
+ 
+3.1 Módulo de información (catálogos y parámetros)
+ 
+
+ 
+Creación de roles (por defecto: Chofer, Estibador, Digitador/Administrador según necesidad)
+ 
+(editable/inactivable).
+ 
+
+ 
+Creación de bancos (catálogo)
+ 
+(editable/inactivable).
+ 
+
+ 
+Creación de camiones: nombre, kilometraje inicial, placa (única), tonelaje máximo 
+(quintales), rendimiento esperado (opcional) para control combustible
+ 
+(editable/inactivable).
+ 
+
+ 
+Creación de tipos de gastos: combustible, mantenimiento, viáticos, peaje, acompañante, otros 
+(editable/inactivable).
+ 
+
+ 
+Creación de rutas: largas, cortas y mixtas (editable/inactivable).
+ 
+
+
+
+ 
+Creación de estados de viaje: por ejemplo Registrado, En curso, Finalizado, Liquidado, 
+Pagado (editable/inactivable).
+ 
+
+ 
+Creación de productos (catálogo) con unidad de medida y peso en quintales por unidad (si se 
+desea validar capacidad automáticamente)
+ 
+(editable/inactivable).
+ 
+
+ 
+Creación de valores de carga/descarga (métricas por producto) para rutas largas: producto, 
+valor unitario, aplica a carga/descarga/mixto, editable/inactivable.
+ 
+
+ 
+Creación de métricas de pago para rutas cortas: condición (ej: valor_carga >= 4500), valor a 
+pagar (ej: 18), aplica a carga/descarga/mixto, editable/inactivable.
+ 
+
+ 
+Parámetros del biométrico: formato del .txt, mínimo de horas para pago (ej: 8), reglas de 
+redondeo (2 decimales) y política ante inconsistencias (bloquear carga).
+ 
+ 
+3.2 Módulo de registro de viajes (bitácora)
+ 
+
+ 
+Registro de viajes diarios (varios viajes por camión por día). Campos: Viaje ID, fecha, 
+camión, kilometraje inicial/final, conductor (solo rol Chofer), ruta, tipo de operación 
+(Carga/Descarga/Mixto), estado del viaje.
+ 
+
+ 
+Gastos por viaje: múltiples tipos, valor, observación y (opcional) número de comprobante.
+ 
+
+ 
+Carga del viaje: productos y cantidades (si aplica). Con esto se calcula: valor_carga y 
+validación de capacidad (si el producto tiene peso configurado).
+ 
+
+ 
+Validaciones: placa única, km_final >= km_inicial, no permitir superposición de viajes por el 
+mismo camión si defines ventana horaria (opcional).
+ 
+3.3 Módulo de pago de 
+estibadores (desde .txt)
+ 
+
+ 
+Carga del archivo .txt del biométrico (único por día o por rango configurado).
+ 
+
+ 
+Validación estricta: si hay inconsistencias NO se importa y se muestra un popup con el 
+detalle (fila, columna y causa).
+ 
+
+ 
+Tras una importación válida: el sistema lista los estibadores detectados por día (y, si aplica, 
+por turno).
+ 
+
+ 
+El digitador vincula esos estibadores a viajes ya registrados de esa fecha (solo muestra viajes 
+del mismo día).
+ 
+
+ 
+Cálculo automático del pago por viaje: rutas cortas por condición (ej: 3500
+-
+>15, 4500
+-
+>18) y 
+rutas largas por métricas de producto (carga/descarga/mixto).
+ 
+
+ 
+División automática del pago entre estibadores asignados al viaje. Redondeo a 2 decimales 
+con ajuste de centavos para que el total cuadre.
+ 
+
+ 
+Generación de liquidación semanal por estibador y total general.
+ 
+4. Controles adicionales (sin volverlo complejo)
+ 
+
+ 
+Auditoría mínima: registrar usuario, fecha/hora y acción para crear/editar: viajes, gastos, 
+carga, importación de .txt, asignación de estibadores, generación de liquidaciones y registro 
+de pagos.
+ 
+
+ 
+Bloqueo por estado: si un viaje está Liquidado o Pagado, no se puede editar km, ruta, carga, 
+gastos ni asignaciones (solo reverso controlado por administrador).
+ 
+
+
+
+ 
+Control de duplicados: impedir importar el mismo .txt dos veces para la misma fecha (hash 
+del archivo o combinación fecha+dispositivo si existe).
+ 
+
+ 
+Control de capacidad: si se registra carga en quintales (por producto o total), validar 
+carga_total <= tonelaje_max del camión y alertar si excede (no permitir guardar si excede, o 
+permitir con autorización).
+ 
+
+ 
+Control combustible real vs esperado (opcional): si el gasto es Combustible y se registra 
+litros/galones, comparar contra consumo esperado calculado por km recorridos (parámetro 
+por camión).
+ 
+
+ 
+Reporte de inconsistencias y pendientes: estibadores presentes (txt válido) sin asignación de 
+viaje, y viajes que requieren estiba pero no tienen estibadores vinculados.
+ 
+
+ 
+Política clara de turnos cruzados (noche): si salida es al día siguiente, el sistema debe 
+permitirlo y asignar el bloque al día de entrada (o según parámetro).
+ 
+
+ 
+Reglas de horas mínimas: por defecto 8 horas, pero parametrizable. Si no cumple, se marca 
+como 'No aplica pago' automáticamente.
+ 
+5. Especificación del .txt y validaciones (con popup bloqueante)
+ 
+Formato requerido (separador: |):
+ 
+ID_persona|Nombre|Departamento|Fecha|Primera_perforacion|Ultima_perfora
+cion|Numero_perforaciones|Horas_reales_trabajo
+ 
+Validaciones obligatorias (si falla una, NO se importa):
+ 
+
+ 
+Columnas exactas y en el orden definido. Si falta una columna o 
+sobra, rechazar.
+ 
+
+ 
+Fecha válida (YYYY
+-
+MM
+-
+DD o el formato que definas) y consistente con el día de 
+importación.
+ 
+
+ 
+Horas válidas (HH:MM) para primera y última perforación.
+ 
+
+ 
+Numero_perforaciones es numérico entero >= 2.
+ 
+
+ 
+Horas_reales_trabajo es numérico (puede ser decimal).
+ 
+
+ 
+Horas_reales_trabajo >= mínimo configurado (por defecto 8). Si no cumple, el registro se 
+importa como 'No aplica pago' o se rechaza según parámetro (recomendado: importar pero 
+marcar no pagable).
+ 
+
+ 
+IDs de biométrico deben existir en Personal y tener rol Estibador (si no existe, rechazar y 
+reportar).
+ 
+
+ 
+No permitir filas duplicadas exactas (mismo ID, fecha, horas).
+ 
+Popup de error (ejemplo de mensaje):
+ 
+No se pudo importar el archivo.
+ 
+Errores encontrados:
+ 
+-
+ 
+Fila 12, columna 'Fecha': valor 
+'2026/02/19' no cumple el formato 
+YYYY
+-
+MM
+-
+DD.
+ 
+-
+ 
+Fila 25, columna 'Numero_perforaciones': valor '1' es inválido (debe 
+ser >= 2).
+ 
+-
+ 
+Fila 31, columna 'ID_persona': '9999' no existe en Personal.
+ 
+
+
+6. Modelo de datos propuesto (tablas)
+ 
+Modelo simple y suficiente para automatizar sin complejidad innecesaria. PK = clave primaria, 
+FK = clave foránea.
+ 
+Tabla
+ 
+Propósito
+ 
+Campos principales
+ 
+roles
+ 
+roles del sistema
+ 
+id (PK), nombre (único), activo
+ 
+bancos
+ 
+catálogo de bancos
+ 
+id (PK), nombre (único), activo
+ 
+personal
+ 
+choferes/estibadores/digitador
+es
+ 
+id (PK), id_biometrico (único), nombres, 
+cedula (única), celular, correo, direccion, 
+banco_id (FK), cuenta_bancaria, activo, 
+detalle
+ 
+personal_roles
+ 
+relación N a N
+ 
+personal_id (FK), rol_id (FK), 
+PK(personal_id, rol_id)
+ 
+camiones
+ 
+camiones y parámetros
+ 
+id (PK), nombre, placa (única), 
+km_inicial_registro, 
+tonelaje_max_quintales, 
+rendimiento_esperado (opcional), activo
+ 
+rutas
+ 
+rutas largas/cortas/mixtas
+ 
+id (PK), nombre, tipo 
+(LARGA/CORTA/MIXTA), activo
+ 
+estados_viaje
+ 
+workflow del viaje
+ 
+id (PK), nombre, orden (opcional), activo
+ 
+productos
+ 
+catálogo de productos
+ 
+id (PK), nombre, unidad 
+(saco/caja/gaveta/etc), 
+peso_quintales_por_unidad (opcional), 
+activo
+ 
+metricas_ruta_larg
+a
+ 
+valores unitarios por producto
+ 
+id (PK), ruta_id (FK), producto_id (FK), 
+operacion 
+(CARGA/DESCARGA/MIXTO), 
+valor_unitario, activo
+ 
+metricas_ruta_cort
+a
+ 
+reglas por condición
+ 
+id (PK), ruta_id (FK), operacion 
+(CARGA/DESCARGA/MIXTO), 
+condicion (texto), valor_pagar, activo
+ 
+viajes
+ 
+bitácora de transporte
+ 
+id (PK), viaje_codigo (único), fecha, 
+camion_id (FK), chofer_id (FK personal), 
+ruta_id (FK), operacion 
+(CARGA/DESCARGA/MIXTO), 
+km_inicial, km_final, estado_id (FK), 
+
+
+valor_carga (opcional), observacion
+ 
+viaje_gastos
+ 
+gastos por viaje
+ 
+id (PK), viaje_id (FK), tipo_gasto, valor, 
+observacion, comprobante (opcional)
+ 
+viaje_carga
+ 
+detalle de carga por viaje
+ 
+id (PK), viaje_id (FK), producto_id (FK), 
+cantidad, peso_total_quintales 
+(calculado/opcional)
+ 
+biometrico_import
+s
+ 
+control de importación txt
+ 
+id (PK), fecha, archivo_hash, usuario_id 
+(FK personal), fecha_hora_import, estado 
+(VALIDO/RECHAZADO), detalle_error 
+(si aplica)
+ 
+biometrico_marca
+s
+ 
+filas del txt (validado)
+ 
+id (PK), import_id (FK), id_biometrico, 
+fecha, primera, ultima, perforaciones, 
+horas_reales, pagable (bool), 
+motivo_no_pagable (opcional)
+ 
+asignacion_estiba
+ 
+vincula estibadores del txt a 
+viajes
+ 
+id (PK), viaje_id (FK), marca_id (FK 
+biometrico_marcas), rol_en_viaje 
+(ESTIBA), monto_calculado
+ 
+liquidaciones
+ 
+resumen semanal por 
+estibador
+ 
+id (PK), 
+semana_inicio, semana_fin, 
+estibador_personal_id (FK personal), total, 
+estado 
+(PENDIENTE/APROBADO/PAGADO)
+ 
+liquidacion_detall
+e
+ 
+detalle por viaje en la 
+liquidación
+ 
+id (PK), liquidacion_id (FK), viaje_id 
+(FK), monto
+ 
+pagos
+ 
+registro de pagos
+ 
+id (PK), liquidacion_id (FK), fecha_pago, 
+banco_id (FK), comprobante, monto, 
+estado 
+(PAGADO/TRANSFERIDO/VERIFICAD
+O)
+ 
+auditoria
+ 
+trazabilidad mínima
+ 
+id (PK), usuario_id (FK personal), entidad, 
+entidad_id, accion, fecha_hora, detalle 
+(json/texto)
+ 
+ 
+6.1 Diagrama de relaciones (simplificado)
+ 
+[personal]
+---
+< [personal_roles] >
+---
+[roles]
+ 
+    
+|
+ 
+    
++
+---
+(chofer)
+---
+< [viajes ] >
+---
+[camiones]
+ 
+                       
+|
+ 
+
+
+                       
++
+---
+[rutas]
+ 
+                       
+|
+ 
+                       
++
+---
+< [viaje_gastos]
+ 
+                       
+|
+ 
+                       
++
+---
+< [viaje_carga ] >
+---
+[productos]
+ 
+                       
+|
+ 
+                       
++
+---
+< [asignacion_estiba ] >
+---
+[biometrico_marcas]
+---
+[biometrico_imports]
+ 
+ 
+[metricas_ruta_larga ]
+---
+[rutas]
+---
+[metricas_ruta_corta]
+ 
+ 
+[liquidaciones]
+---
+< [liquidacion_detalle ] >
+---
+[viajes]
+ 
+[liquidaciones]
+---
+< [pagos ] >
+---
+[bancos]
+ 
+ 
+[auditoria] registra cambios sobre viajes, importaciones, asignaciones, 
+liquidaciones y pagos.
+ 
+7. Tecnología (web, simple y mantenible)
+ 
+
+ 
+Frontend web: Next.js (React) + TypeScript. UI con componentes (shadcn/ui o similar).
+ 
+
+ 
+Backend: Node.js con NestJS (o Express) + TypeScript. Alternativa: Django (Python) si tu 
+equipo domina Python.
+ 
+
+ 
+Base de datos: PostgreSQL.
+ 
+
+ 
+Autenticación: login con roles 
+(Digitador/Administrador).
+ 
+
+ 
+Hosting: Vercel para frontend, y servidor VPS/Render/Fly.io para backend + PostgreSQL 
+administrado.
+ 
+
+ 
+Archivos: el .txt se almacena (opcional) y siempre se guarda su hash para evitar duplicados.
+ 
+
+ 
+Reportes: exportación a Excel/PDF (opcional) para liquidaciones y pagos.
+ 
+8. 
+No olvidar, pantallas importantes
+ 
+
+ 
+Login y gestión de usuarios/roles (básico).
+ 
+
+ 
+Catálogos: roles, bancos, camiones, rutas, estados, productos, métricas ruta corta/larga.
+ 
+
+ 
+Bitácora: crear/editar viaje, gastos, carga, cambio de estado.
+ 
+
+ 
+Importación biométrico: subir .txt, validar, popup de errores, y listado de marcas válidas.
+ 
+
+ 
+Asignación estiba: seleccionar fecha, ver estibadores del .txt, vincular a viajes del día, ver 
+cálculo automático.
+ 
+
+ 
+Liquidación semanal: generar, revisar, aprobar, registrar pago con comprobante.
+ 
+
+ 
+Reportes básicos: pagos por estibador, costos por ruta/camión, inconsistencias.
+ 

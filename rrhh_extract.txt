@@ -1,0 +1,346 @@
+PAGES: 10
+
+--- PAGE 1 ---
+
+MÓDULO  DE  SOBRANTES  Y  
+FALTANTES
+ 
+(AJUSTES
+ 
+DEL
+ 
+PERSONAL)
+ 
+1.  Objetivo  
+Este  módulo  permite  registrar  valores  adicionales  o  descuentos  aplicables  al  personal,  ya  
+sea
+ 
+en
+ 
+forma
+ 
+de
+ 
+sobrantes
+ 
+(valores
+ 
+a
+ 
+favor
+ 
+del
+ 
+trabajador)
+ 
+o
+ 
+faltantes
+ 
+(valores
+ 
+a
+ 
+descontar).
+ 
+Su  finalidad  es  automatizar  la  aplicación  de  estos  valores  en:  
+●  El  Rol  mensual,  cuando  el  trabajador  está  afiliado  al  IESS.  
+ ●  La  Liquidación  semanal,  cuando  el  trabajador  no  está  afiliado  al  IESS.  
+ 
+De  esta  manera,  el  sistema  descuenta  o  suma  automáticamente  los  valores  sin  necesidad  
+de
+ 
+cálculos
+ 
+manuales.
+ 
+ 
+2.  Alcance  
+Este  módulo  aplica  a:  
+●  Afiliados  al  IESS  →  afecta  el  Rol  mensual.  
+ ●  No  afiliados  al  IESS  →  afecta  la  Liquidación  semanal.  
+ 
+Los  ajustes  pueden  aplicarse:  
+●  En  un  solo  pago.  
+ ●  En  cuotas.  
+ ●  Con  frecuencia  semanal  o  mensual.  
+ 
+ 
+3.  Vista  principal  
+La  vista  principal  mostrará  un  listado  con:  
+
+--- PAGE 2 ---
+
+●  Empleado  
+ ●  Tipo  (Sobrante  /  Faltante)  
+ ●  Detalle  
+ ●  Valor  total  
+ ●  Cantidad  de  cuotas  
+ ●  Frecuencia  
+ ●  Estado  
+ ●  Acciones  (Editar  /  Pausar  /  Cancelar)  
+ 
+Filtros  disponibles:  
+●  Por  empleado  
+ ●  Por  tipo  
+ ●  Por  estado  
+ ●  Por  frecuencia  
+ 
+Botón:  +  Nuevo  Ajuste  
+ 
+4.  Formulario  de  creación  /  edición  
+Campos  obligatorios:  
+●  Tipo  (Selección)  
+ ○  Sobrante  
+ ○  Faltante  
+ ●  Detalle  (Texto  descriptivo)  
+ ●  Valor  (Monto  total  del  ajuste)  
+ ●  Cuotas  (Sí  /  No)  
+ 
+
+--- PAGE 3 ---
+
+●  Cantidad  de  cuotas  (si  aplica)  
+ ●  Frecuencia  
+ ○  Semanal  
+ ○  Mensual  
+ ●  Estado  
+ ○  Activo  
+ ○  Pausado  
+ ○  Cancelado  
+ ○  Finalizado  
+ 
+ 
+5.  Reglas  de  cálculo  
+5.1  Valor  por  cuota  
+Si  el  ajuste  tiene  cuotas:  
+monto_cuota  =  valor_total  /  cantidad_cuotas  
+Si  no  tiene  cuotas:  
+monto_cuota  =  valor_total  (se  aplica  una  sola  vez)  
+ 
+5.2  Aplicación  según  tipo  de  empleado  
+A)  Si  el  empleado  está  afiliado  al  IESS:  
+●  Los  ajustes  NO  afectan  la  liquidación  semanal.  
+ ●  Se  aplican  automáticamente  en  el  Rol  mensual.  
+ ●  Sobrantes  →  se  suman  en  INGRESOS  del  rol.  
+ ●  Faltantes  →  se  descuentan  en  EGRESOS  del  rol.  
+ 
+
+--- PAGE 4 ---
+
+ 
+B)  Si  el  empleado  NO  está  afiliado  al  IESS:  
+●  Los  ajustes  se  aplican  en  la  Liquidación  semanal.  
+ ●  Sobrantes  →  aumentan  el  total  semanal.  
+ ●  Faltantes  →  disminuyen  el  total  semanal.  
+ 
+ 
+6.  Anticipos  quincenales  
+Los  anticipos  que  se  entregan  en  la  quincena  deben  registrarse  como:  
+Tipo:  Faltante  
+ 
+Frecuencia:
+ 
+Mensual
+ 
+ 
+Cuotas:
+ 
+No
+ 
+De  esta  forma:  
+●  El  anticipo  se  registra  cuando  se  entrega.  
+ ●  Se  descuenta  automáticamente  en  el  Rol  mensual.  
+ ●  Aparece  en  el  rol  dentro  de  EGRESOS  con  su  detalle  correspondiente.  
+ 
+Si  el  empleado  no  está  afiliado  al  IESS,  el  anticipo  se  descuenta  en  la  liquidación  semanal.  
+ 
+7.  Reglas  de  control  
+●  No  se  puede  aplicar  un  ajuste  si  su  estado  es  Pausado  o  Cancelado.  
+ ●  No  se  permite  modificar  ajustes  que  ya  fueron  completamente  aplicados.  
+ ●  No  se  pueden  registrar  ajustes  retroactivos  si  el  rol  del  mes  ya  está  Pagado.  
+ ●  Cada  aplicación  de  ajuste  debe  registrarse  en  auditoría.  
+ 
+ 
+
+--- PAGE 5 ---
+
+MÓDULO  ROLES  (ROL  DE  PAGOS  
+MENSUAL
+ 
+–
+ 
+AFILIADOS
+ 
+IESS)
+ 
+1.  Objetivo  
+Generar  el  Rol  de  Pagos  Individual  mensual,  conforme  al  formato  legal  ecuatoriano,  
+mostrando:
+ 
+●  Ingresos  
+ ●  Egresos  
+ ●  Totales  
+ ●  Neto  a  pagar  
+ ●  Firmas  y  observaciones  
+ 
+Este  módulo  aplica  exclusivamente  a  empleados  afiliados  al  IESS.  
+ 
+2.  Periodicidad  
+El  rol  se  genera  al  final  de  cada  mes.  
+Durante  el  mes  pueden  registrarse:  
+●  Anticipos  quincenales  
+ ●  Ajustes  (sobrantes  o  faltantes)  
+ 
+Todos  estos  se  consolidan  en  el  rol  mensual.  
+ 
+3.  Estructura  del  rol  (según  formato  Ecuador)  
+Cabecera  
+●  Nombre  de  la  empresa  
+ 
+
+--- PAGE 6 ---
+
+●  RUC  
+ ●  Dirección  
+ ●  Teléfono  
+ ●  Título:  ROL  DE  PAGOS  INDIVIDUAL  
+ ●  Mes  
+ ●  Empleado  
+ ●  Cédula  
+ ●  Días  
+ ●  Fecha  inicio  /  Fecha  fin  
+ 
+ 
+4.  Sección  INGRESOS  
+Debe  mostrar:  
+●  SUELDO  GENERAL  
+ ●  DEC.  III  SUELDO  (si  aplica)  
+ ●  DEC.  IV  SUELDO  (si  aplica)  
+ ●  FONDOS  RESERVA  (si  aplica)  
+ ●  ALIMENTACIÓN  
+ ●  TRANSPORTE  
+ ●  BONIFICACIONES  (si  existen)  
+ ●  SOBRANTES  (si  existen)  
+ 
+ 
+5.  Sección  EGRESOS  
+Debe  mostrar:  
+
+--- PAGE 7 ---
+
+●  APORTE  IESS  (si  descuenta  IESS)  
+ ●  ANTICIPOS  
+ ●  FALTANTES  
+ ●  Otros  descuentos  si  existen  
+ 
+ 
+6.  Cálculos  principales  
+Variables:  
+SI  =  Sueldo  IESS  
+ 
+SR
+ 
+=
+ 
+Sueldo
+ 
+Real
+ 
+ 
+6.1  Aporte  personal  IESS  
+Si  descuenta_iess  =  Sí:  
+aporte_iess  =  SI  ×  9.45%  
+Si  descuenta_iess  =  No:  
+aporte_iess  =  0  
+ 
+6.2  Décimos  y  fondos  
+Si  aplica:  
+●  Décimo  tercero  =  SI  /  12  
+ ●  Décimo  cuarto  =  valor  parametrizable  /  12  
+ ●  Fondo  de  reserva  =  SI  ×  8.33%  
+ 
+Estos  se  muestran  en  INGRESOS.  
+ 
+6.3  Neto  objetivo  
+
+--- PAGE 8 ---
+
+El  sistema  debe  garantizar  que:  
+NetoObjetivo  =  SR  +  SobrantesMes  −  FaltantesMes  −  AnticiposMes  −  AporteIESS  
+El  resultado  final  del  rol  debe  cumplir:  
+TotalIngresos  −  TotalEgresos  =  NetoObjetivo  
+ 
+7.  Alimentación  y  Transporte  
+●  Son  rubros  de  ajuste.  
+ ●  No  afectan  IESS  ni  décimos.  
+ ●  Solo  se  utilizan  si  es  necesario  completar  el  NetoObjetivo.  
+ ●  La  suma  de  Alimentación  +  Transporte  no  puede  exceder  el  20%  del  Sueldo  Real.  
+ 
+ 
+8.  Integración  con  ajustes  
+Sobrantes  
+Se  suman  en  INGRESOS.  
+Faltantes  
+Se  restan  en  EGRESOS.  
+Anticipos  
+Se  muestran  como  EGRESOS.  
+Los  ajustes  no  modifican  el  Sueldo  IESS.  
+ 
+El
+ 
+IESS
+ 
+siempre
+ 
+se
+ 
+calcula
+ 
+únicamente
+ 
+sobre
+ 
+el
+ 
+Sueldo
+ 
+IESS.
+ 
+ 
+9.  Estados  del  rol  
+●  Borrador  
+ 
+
+--- PAGE 9 ---
+
+●  Aprobado  
+ ●  Pagado  
+ ●  Verificado  
+ 
+Una  vez  en  estado  Pagado,  el  rol  no  puede  editarse  sin  reverso  con  auditoría.  
+ 
+10.  Control  y  auditoría  
+El  sistema  debe  registrar:  
+●  Usuario  que  generó  el  rol  
+ ●  Usuario  que  aprobó  
+ ●  Usuario  que  marcó  como  pagado  
+ ●  Fecha  y  hora  de  cada  acción  
+ ●  Cambios  en  valores  
+ 
+ 
+Resultado  del  sistema  
+Con  estos  dos  módulos:  
+●  Se  automatizan  anticipos  quincenales.  
+ ●  Se  controlan  sobrantes  y  faltantes.  
+ ●  Se  mantiene  la  estructura  legal  del  rol  ecuatoriano.  
+ ●  Se  respeta  el  cálculo  del  IESS.  
+ ●  Se  respeta  el  límite  del  20%  en  alimentación  y  transporte.  
+ ●  El  neto  pagado  siempre  coincide  con  lo  que  realmente  se  quiere  pagar.  
+ 
+ 
+
+--- PAGE 10 ---
+
+  Ejemplo  de  formato  de  rol:   
+ 
