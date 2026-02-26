@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS personal_roles (
 CREATE TABLE IF NOT EXISTS personal (
   id SERIAL PRIMARY KEY,
   nombre TEXT NOT NULL,
+<<<<<<< HEAD
   apellidos TEXT,
   documento TEXT,
   banco_id INTEGER REFERENCES bancos(id),
@@ -47,6 +48,11 @@ CREATE TABLE IF NOT EXISTS personal (
   cobra_decimo_tercero BOOLEAN NOT NULL DEFAULT FALSE,
   cobra_decimo_cuarto BOOLEAN NOT NULL DEFAULT FALSE,
   cobra_fondo_reserva BOOLEAN NOT NULL DEFAULT FALSE,
+=======
+  documento TEXT,
+  banco_id INTEGER REFERENCES bancos(id),
+  numero_cuenta TEXT,
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   user_id INTEGER REFERENCES users(id),
   personal_role_id INTEGER REFERENCES personal_roles(id),
   activo BOOLEAN NOT NULL DEFAULT TRUE,
@@ -56,6 +62,7 @@ CREATE TABLE IF NOT EXISTS personal (
 ALTER TABLE personal
 ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);
 
+<<<<<<< HEAD
 ALTER TABLE personal
 ADD COLUMN IF NOT EXISTS apellidos TEXT;
 
@@ -92,6 +99,8 @@ ADD COLUMN IF NOT EXISTS cobra_decimo_cuarto BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE personal
 ADD COLUMN IF NOT EXISTS cobra_fondo_reserva BOOLEAN NOT NULL DEFAULT FALSE;
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 CREATE TABLE IF NOT EXISTS personal_role_assignments (
   id SERIAL PRIMARY KEY,
   personal_id INTEGER NOT NULL REFERENCES personal(id) ON DELETE CASCADE,
@@ -122,14 +131,20 @@ CREATE TABLE IF NOT EXISTS rutas (
   nombre TEXT NOT NULL UNIQUE,
   tipo TEXT NOT NULL,
   distancia_km NUMERIC(12,2) DEFAULT 0,
+<<<<<<< HEAD
   valor NUMERIC(12,2) NOT NULL DEFAULT 0,
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   activo BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
+<<<<<<< HEAD
 ALTER TABLE rutas
 ADD COLUMN IF NOT EXISTS valor NUMERIC(12,2) NOT NULL DEFAULT 0;
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 CREATE TABLE IF NOT EXISTS estados_viaje (
   id SERIAL PRIMARY KEY,
   nombre TEXT NOT NULL UNIQUE,
@@ -160,7 +175,10 @@ CREATE TABLE IF NOT EXISTS metricas_ruta_corta (
   condicion_valor_carga NUMERIC(12,2) NOT NULL DEFAULT 0,
   condicion_valor_carga_desde NUMERIC(12,2),
   condicion_valor_carga_hasta NUMERIC(12,2),
+<<<<<<< HEAD
   numero_personas INTEGER NOT NULL DEFAULT 1,
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   valor_pagar NUMERIC(12,2) NOT NULL DEFAULT 0,
   tipo_operacion TEXT NOT NULL,
   activo BOOLEAN NOT NULL DEFAULT TRUE,
@@ -168,9 +186,12 @@ CREATE TABLE IF NOT EXISTS metricas_ruta_corta (
 );
 
 ALTER TABLE metricas_ruta_corta
+<<<<<<< HEAD
 ADD COLUMN IF NOT EXISTS numero_personas INTEGER NOT NULL DEFAULT 1;
 
 ALTER TABLE metricas_ruta_corta
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 ADD COLUMN IF NOT EXISTS condicion_valor_carga_desde NUMERIC(12,2);
 
 ALTER TABLE metricas_ruta_corta
@@ -300,6 +321,7 @@ CREATE TABLE IF NOT EXISTS liquidacion_detalle (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
+<<<<<<< HEAD
 CREATE TABLE IF NOT EXISTS ajustes_personal (
   id SERIAL PRIMARY KEY,
   personal_id INTEGER NOT NULL REFERENCES personal(id) ON DELETE RESTRICT,
@@ -381,6 +403,8 @@ CREATE TABLE IF NOT EXISTS rol_ajustes_detalle (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 CREATE TABLE IF NOT EXISTS pagos (
   id SERIAL PRIMARY KEY,
   liquidacion_id INTEGER NOT NULL REFERENCES liquidaciones(id) ON DELETE RESTRICT,
@@ -394,6 +418,7 @@ CREATE TABLE IF NOT EXISTS pagos (
   UNIQUE (liquidacion_id)
 );
 
+<<<<<<< HEAD
 CREATE TABLE IF NOT EXISTS pagos_roles_mensuales (
   id SERIAL PRIMARY KEY,
   rol_mensual_id INTEGER NOT NULL REFERENCES roles_mensuales(id) ON DELETE RESTRICT,
@@ -414,6 +439,8 @@ ALTER TABLE ajustes_personal
 ALTER TABLE pagos_roles_mensuales
   ADD COLUMN IF NOT EXISTS estado_previo_rol TEXT NOT NULL DEFAULT 'borrador';
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 CREATE TABLE IF NOT EXISTS auditoria (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id),

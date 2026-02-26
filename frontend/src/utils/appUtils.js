@@ -12,9 +12,13 @@ export function createInitialFormValues(catalogKey) {
   const fields = CATALOGS[catalogKey]?.fields || []
   const form = {}
   for (const field of fields) {
+<<<<<<< HEAD
     if (field.type === 'boolean') {
       form[field.key] = field.defaultValue !== undefined ? Boolean(field.defaultValue) : true
     }
+=======
+    if (field.type === 'boolean') form[field.key] = true
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     else if (field.type === 'multi_select_dropdown') form[field.key] = []
     else form[field.key] = ''
   }

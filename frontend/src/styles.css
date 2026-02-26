@@ -566,6 +566,7 @@ select:focus-visible {
   position: relative;
 }
 
+<<<<<<< HEAD
 .search-select {
   position: relative;
 }
@@ -666,6 +667,8 @@ select:focus-visible {
   padding: 6px 8px;
 }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 .multi-dropdown-trigger {
   width: 100%;
   min-height: 40px;
@@ -677,7 +680,10 @@ select:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
+<<<<<<< HEAD
   gap: 8px;
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   text-align: left;
   cursor: pointer;
 }
@@ -686,16 +692,24 @@ select:focus-visible {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
+<<<<<<< HEAD
   min-width: 100%;
   width: 100%;
   max-width: min(72vw, 520px);
+=======
+  right: 0;
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   z-index: 10;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   background: var(--bg-surface);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
   max-height: 220px;
+<<<<<<< HEAD
   overflow: auto;
+=======
+  overflow-y: auto;
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   padding: 6px;
   display: grid;
   gap: 4px;
@@ -705,12 +719,18 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
+<<<<<<< HEAD
   min-width: max-content;
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   padding: 8px;
   border-radius: 8px;
   cursor: pointer;
   color: var(--text-secondary);
+<<<<<<< HEAD
   white-space: nowrap;
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 }
 
 .multi-dropdown-option:hover {
@@ -734,6 +754,7 @@ select,
   padding: 0 10px;
 }
 
+<<<<<<< HEAD
 .form-row .search-select-trigger,
 .form-grid .search-select-trigger,
 .form-row .search-select-option,
@@ -750,6 +771,8 @@ select,
   border: 0;
 }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 input::placeholder {
   color: var(--text-muted);
 }
@@ -840,6 +863,7 @@ tr:hover td {
   flex-wrap: wrap;
 }
 
+<<<<<<< HEAD
 .section-header-inline {
   display: flex;
   align-items: center;
@@ -885,6 +909,8 @@ tr:hover td {
   background: var(--bg-hover);
 }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 .small-button {
   min-height: 32px;
   border-radius: 8px;

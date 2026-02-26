@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+=======
+import React, { useEffect, useMemo, useState } from 'react'
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 import axios from 'axios'
 import { ACCESS_MODULE_KEYS, CATALOG_MENU_ITEMS, CATALOGS, MAIN_MENU_ITEMS, MENU_ITEMS } from './constants/appConfig'
 import {
@@ -25,11 +29,15 @@ export default function App() {
   const [password, setPassword] = useState('root')
   const [error, setError] = useState('')
   const [multiSelectOpenKey, setMultiSelectOpenKey] = useState('')
+<<<<<<< HEAD
   const [multiSelectSearch, setMultiSelectSearch] = useState({})
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 
   const [catalogRows, setCatalogRows] = useState({})
   const [formValues, setFormValues] = useState({})
   const [editingId, setEditingId] = useState(null)
+<<<<<<< HEAD
   const [personalViewMode, setPersonalViewMode] = useState('list')
   const [personalSearchDocumento, setPersonalSearchDocumento] = useState('')
   const [personalSearchNombre, setPersonalSearchNombre] = useState('')
@@ -40,6 +48,10 @@ export default function App() {
 
   const [viajes, setViajes] = useState([])
   const [nextViajeId, setNextViajeId] = useState('')
+=======
+
+  const [viajes, setViajes] = useState([])
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   const [viajeForm, setViajeForm] = useState(createInitialViajeForm())
   const [editingViajeId, setEditingViajeId] = useState(null)
   const [selectedViajeId, setSelectedViajeId] = useState('')
@@ -83,6 +95,7 @@ export default function App() {
     monto: ''
   })
   const [pagoMessage, setPagoMessage] = useState('')
+<<<<<<< HEAD
   const [rolesPagoOptions, setRolesPagoOptions] = useState([])
   const [pagosRolesMensuales, setPagosRolesMensuales] = useState([])
   const [editingPagoRolId, setEditingPagoRolId] = useState(null)
@@ -118,6 +131,8 @@ export default function App() {
   const [selectedRolId, setSelectedRolId] = useState('')
   const [rolDetalle, setRolDetalle] = useState(null)
   const [rolesMessage, setRolesMessage] = useState('')
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 
   const [reporteDesde, setReporteDesde] = useState(weekRangeDefault.start)
   const [reporteHasta, setReporteHasta] = useState(weekRangeDefault.end)
@@ -180,9 +195,12 @@ export default function App() {
     if (!CATALOGS[currentView]) return
     setEditingId(null)
     setFormValues(createInitialFormValues(currentView))
+<<<<<<< HEAD
     if (currentView === 'personal') {
       setPersonalViewMode('list')
     }
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   }, [currentView])
 
   useEffect(() => {
@@ -204,6 +222,7 @@ export default function App() {
   }, [selectedLiquidacionId])
 
   useEffect(() => {
+<<<<<<< HEAD
     if (!multiSelectOpenKey) return
 
     function handleOutsideClick(event) {
@@ -219,6 +238,8 @@ export default function App() {
   }, [multiSelectOpenKey])
 
   useEffect(() => {
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     if (!token) return
     if (currentView !== 'liquidaciones') return
     fetchLiquidaciones(liquidacionSemana)
@@ -232,6 +253,7 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return
+<<<<<<< HEAD
     if (currentView !== 'ajustes_personal') return
     fetchAjustesPersonal()
   }, [currentView, token])
@@ -252,12 +274,15 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     if (currentView !== 'dashboard') return
     cargarDashboardCamiones(dashboardDesde, dashboardHasta)
   }, [currentView, token])
 
   useEffect(() => {
     if (!token) return
+<<<<<<< HEAD
     if (currentView !== 'bitacora') return
     if (bitacoraTab !== 'gestion') return
     if (editingViajeId) return
@@ -266,6 +291,8 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     if (currentView !== 'dashboard') return
     cargarDashboardCalendarioMes(dashboardCalendarMonth)
   }, [currentView, token, dashboardCalendarMonth])
@@ -310,11 +337,15 @@ export default function App() {
         fetchViajes(),
         fetchBiometricoImports(),
         fetchBiometricoMarcas(),
+<<<<<<< HEAD
         fetchAjustesPersonal(),
         fetchRolesMensuales(rolesPeriodoMes),
         fetchPagos(),
         fetchPagosRolesMensuales(),
         fetchRolesPagoOptions(),
+=======
+        fetchPagos(),
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
         fetchEmpresaLogo(),
         fetchMyAccess()
       ])
@@ -613,6 +644,7 @@ export default function App() {
     }
   }
 
+<<<<<<< HEAD
   async function fetchPagosRolesMensuales() {
     try {
       const r = await axios.get(`${API}/pagos/roles-mensuales`, { headers: authHeaders() })
@@ -913,6 +945,8 @@ export default function App() {
     }
   }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   async function registrarPago() {
     if (!canModifyModule('pagos')) {
       setPagoMessage('No tienes permiso para modificar en Pagos')
@@ -1012,6 +1046,7 @@ export default function App() {
     }
   }
 
+<<<<<<< HEAD
   async function registrarPagoRolMensual() {
     if (!canModifyModule('pagos')) {
       setPagoMessage('No tienes permiso para modificar en Pagos')
@@ -1107,6 +1142,8 @@ export default function App() {
     }
   }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   async function cargarDashboardCamiones(desdeValue = dashboardDesde, hastaValue = dashboardHasta) {
     if (!desdeValue || !hastaValue) {
       setDashboardMessage('Selecciona desde y hasta para consultar el dashboard.')
@@ -1198,15 +1235,22 @@ export default function App() {
       const value = formValues[field.key]
       if (field.type === 'boolean') payload[field.key] = Boolean(value)
       else if (field.type === 'number') payload[field.key] = value === '' ? null : Number(value)
+<<<<<<< HEAD
       else if (field.type === 'date') payload[field.key] = hasValue(value) ? String(value) : null
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       else if (field.type === 'select') payload[field.key] = value === '' ? null : Number(value)
       else if (field.type === 'multi_select_dropdown') payload[field.key] = Array.isArray(value) ? value.map((item) => Number(item)).filter((item) => Number.isInteger(item)) : []
       else payload[field.key] = value
     }
 
     if (catalogKey === 'personal') {
+<<<<<<< HEAD
       if (!hasValue(payload.correo)) payload.correo = null
       payload.email = payload.correo
+=======
+      if (!hasValue(payload.email)) payload.email = null
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       if (!hasValue(payload.password)) payload.password = null
     }
 
@@ -1238,12 +1282,20 @@ export default function App() {
           : []
         const isAdminSelected = adminRole ? selectedRoleIds.includes(Number(adminRole.id)) : false
 
+<<<<<<< HEAD
         if (isAdminSelected && !hasValue(formValues.correo)) {
+=======
+        if (isAdminSelected && !hasValue(formValues.email)) {
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
           return setError('Correo es obligatorio para rol Admin')
         }
 
         if (isAdminSelected && !editingId && !hasValue(formValues.password)) {
+<<<<<<< HEAD
           return setError('Clave es obligatoria para rol Admin')
+=======
+          return setError('Contraseña es obligatoria para rol Admin')
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
         }
       }
 
@@ -1265,7 +1317,10 @@ export default function App() {
     for (const field of CATALOGS[currentView].fields) {
       const value = row[field.key]
       if (field.type === 'boolean') values[field.key] = value !== false
+<<<<<<< HEAD
       else if (field.type === 'date') values[field.key] = value ? String(value).slice(0, 10) : ''
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       else if (field.type === 'multi_select_dropdown') {
         if (Array.isArray(value)) values[field.key] = value.map((item) => String(item))
         else if (row.personal_role_id) values[field.key] = [String(row.personal_role_id)]
@@ -1276,6 +1331,7 @@ export default function App() {
     setFormValues(values)
   }
 
+<<<<<<< HEAD
   function resolvePersonalRoleNames(roleIds) {
     const roles = catalogRows.personal_roles || []
     const ids = Array.isArray(roleIds) ? roleIds.map((value) => Number(value)) : []
@@ -1393,6 +1449,8 @@ export default function App() {
     }
   }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   async function removeCatalogItem(id) {
     if (!canDeleteModule('base_datos')) {
       setError('No tienes permiso para eliminar en Base de datos')
@@ -1439,7 +1497,10 @@ export default function App() {
       setViajeForm(createInitialViajeForm())
       setEditingViajeId(null)
       await fetchViajes()
+<<<<<<< HEAD
       await fetchNextViajeId()
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       setBitacoraMessage(editingViajeId ? 'Viaje actualizado correctamente.' : 'Viaje(s) guardado(s) correctamente.')
     } catch (err) {
       setBitacoraMessage(err?.response?.data?.error || 'No se pudo guardar el viaje')
@@ -1944,6 +2005,7 @@ export default function App() {
     }
   }
 
+<<<<<<< HEAD
   function SearchableSelect({ value, onChange, options, placeholder, disabled = false, allowEmpty = true }) {
     const containerRef = useRef(null)
     const [isOpen, setIsOpen] = useState(false)
@@ -2028,6 +2090,8 @@ export default function App() {
     )
   }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   function resolveDisplayValue(catalogKey, fieldKey, row) {
     const field = CATALOGS[catalogKey].fields.find((item) => item.key === fieldKey)
     const value = row[fieldKey]
@@ -2050,7 +2114,11 @@ export default function App() {
   }
 
   function renderCatalogInput(field) {
+<<<<<<< HEAD
     const isPersonalAdminField = currentView === 'personal' && field.key === 'password'
+=======
+    const isPersonalAdminField = currentView === 'personal' && (field.key === 'email' || field.key === 'password')
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     if (isPersonalAdminField) {
       const roles = catalogRows.personal_roles || []
       const adminRole = roles.find((role) => String(role.nombre || '').toLowerCase() === 'admin')
@@ -2061,11 +2129,14 @@ export default function App() {
       if (!isAdminSelected) return null
     }
 
+<<<<<<< HEAD
     const isPersonalIessField = currentView === 'personal' && ['fecha_afiliacion_iess', 'sueldo_iess', 'sueldo_real', 'descuenta_iess', 'cobra_decimo_tercero', 'cobra_decimo_cuarto', 'cobra_fondo_reserva'].includes(field.key)
     if (isPersonalIessField && !formValues.afiliado_iess) {
       return null
     }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     const value = formValues[field.key]
 
     if (field.type === 'boolean') {
@@ -2080,6 +2151,7 @@ export default function App() {
     if (field.type === 'select') {
       const options = catalogRows[field.source] || []
       return (
+<<<<<<< HEAD
         <SearchableSelect
           key={field.key}
           value={value ?? ''}
@@ -2087,11 +2159,18 @@ export default function App() {
           placeholder={field.label}
           options={options.map((item) => ({ value: String(item.id), label: String(item[field.sourceLabel] || '') }))}
         />
+=======
+        <select key={field.key} value={value ?? ''} onChange={(e) => setFormValues((prev) => ({ ...prev, [field.key]: e.target.value }))}>
+          <option value="">{field.label}</option>
+          {options.map((item) => <option key={item.id} value={item.id}>{item[field.sourceLabel]}</option>)}
+        </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       )
     }
 
     if (field.type === 'select_static') {
       return (
+<<<<<<< HEAD
         <SearchableSelect
           key={field.key}
           value={value ?? ''}
@@ -2099,6 +2178,12 @@ export default function App() {
           placeholder={field.label}
           options={field.options.map((item) => ({ value: String(item), label: String(item) }))}
         />
+=======
+        <select key={field.key} value={value ?? ''} onChange={(e) => setFormValues((prev) => ({ ...prev, [field.key]: e.target.value }))}>
+          <option value="">{field.label}</option>
+          {field.options.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       )
     }
 
@@ -2110,6 +2195,7 @@ export default function App() {
         .map((item) => item[field.sourceLabel])
       const dropdownKey = `${currentView}-${field.key}`
       const isOpen = multiSelectOpenKey === dropdownKey
+<<<<<<< HEAD
       const searchText = String(multiSelectSearch[dropdownKey] || '').trim().toLowerCase()
       const filteredOptions = options.filter((item) => String(item[field.sourceLabel] || '').toLowerCase().includes(searchText))
 
@@ -2121,13 +2207,19 @@ export default function App() {
         }
         setMultiSelectOpenKey(dropdownKey)
       }
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
 
       return (
         <div className="multi-dropdown" key={field.key}>
           <button
             type="button"
             className="multi-dropdown-trigger"
+<<<<<<< HEAD
             onClick={toggleDropdown}
+=======
+            onClick={() => setMultiSelectOpenKey((prev) => (prev === dropdownKey ? '' : dropdownKey))}
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
           >
             <span>{selectedLabels.length > 0 ? selectedLabels.join(', ') : field.label}</span>
             <span>{isOpen ? '▴' : '▾'}</span>
@@ -2135,6 +2227,7 @@ export default function App() {
 
           {isOpen && (
             <div className="multi-dropdown-menu">
+<<<<<<< HEAD
               <input
                 className="multi-dropdown-search"
                 type="text"
@@ -2143,6 +2236,9 @@ export default function App() {
                 onChange={(event) => setMultiSelectSearch((prev) => ({ ...prev, [dropdownKey]: event.target.value }))}
               />
               {filteredOptions.map((item) => {
+=======
+              {options.map((item) => {
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                 const checked = selectedValues.includes(String(item.id))
                 return (
                   <label className="multi-dropdown-option" key={item.id}>
@@ -2164,7 +2260,10 @@ export default function App() {
                   </label>
                 )
               })}
+<<<<<<< HEAD
               {filteredOptions.length === 0 ? <div className="search-select-empty">Sin resultados</div> : null}
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             </div>
           )}
         </div>
@@ -2174,7 +2273,11 @@ export default function App() {
     return (
       <input
         key={field.key}
+<<<<<<< HEAD
         type={field.type === 'number' ? 'number' : (field.type === 'password' ? 'password' : (field.type === 'date' ? 'date' : 'text'))}
+=======
+        type={field.type === 'number' ? 'number' : (field.type === 'password' ? 'password' : 'text')}
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
         step={field.type === 'number' ? '0.01' : undefined}
         placeholder={field.label}
         value={value ?? ''}
@@ -2231,6 +2334,7 @@ export default function App() {
     )
   }
 
+<<<<<<< HEAD
   function renderPersonalView() {
     const rows = catalogRows.personal || []
     const roles = catalogRows.personal_roles || []
@@ -2396,6 +2500,8 @@ export default function App() {
     )
   }
 
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
   function renderBitacoraView() {
     const selectedViaje = (viajes || []).find((viaje) => String(viaje.id) === String(selectedViajeId))
     const rutaSelected = (catalogRows.rutas || []).find((item) => Number(item.id) === Number(selectedViaje?.ruta_id))
@@ -2423,6 +2529,7 @@ export default function App() {
           <>
             <div className="card form-card">
               <h3>{editingViajeId ? 'Editar viaje' : 'Crear viaje'}</h3>
+<<<<<<< HEAD
               {!editingViajeId ? <p className="helper-text">El ID del viaje se genera automáticamente.</p> : null}
               <div className="form-grid">
                 {!editingViajeId ? <input value={nextViajeId} readOnly placeholder="Siguiente Viaje ID" aria-label="Siguiente Viaje ID" /> : null}
@@ -2531,13 +2638,84 @@ export default function App() {
                     { value: 'mixto', label: 'Mixto' }
                   ]}
                 />
+=======
+              <div className="form-grid">
+                <input placeholder="Viaje ID único" value={viajeForm.viaje_id} onChange={(e) => setViajeForm((prev) => ({ ...prev, viaje_id: e.target.value }))} />
+                <input type="date" value={viajeForm.fecha_desde} onChange={(e) => setViajeForm((prev) => ({ ...prev, fecha_desde: e.target.value }))} />
+                <input type="date" value={viajeForm.fecha_hasta} onChange={(e) => setViajeForm((prev) => ({ ...prev, fecha_hasta: e.target.value }))} />
+                <select value={viajeForm.camion_id} onChange={(e) => setViajeForm((prev) => ({ ...prev, camion_id: e.target.value }))}>
+                  <option value="">Camión</option>
+                  {(catalogRows.camiones || []).filter((c) => c.activo).map((c) => <option key={c.id} value={c.id}>{c.placa} - {c.nombre}</option>)}
+                </select>
+                <select value={viajeForm.conductor_id} onChange={(e) => setViajeForm((prev) => ({ ...prev, conductor_id: e.target.value }))}>
+                  <option value="">Conductor</option>
+                  {conductores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+                {editingViajeId ? (
+                  <select value={viajeForm.ruta_id} onChange={(e) => setViajeForm((prev) => ({ ...prev, ruta_id: e.target.value }))}>
+                    <option value="">Ruta</option>
+                    {rutasActivas.map((r) => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                  </select>
+                ) : (
+                  <div className="multi-dropdown">
+                    <button
+                      type="button"
+                      className="multi-dropdown-trigger"
+                      onClick={() => setMultiSelectOpenKey((prev) => (prev === 'viajes-rutas' ? '' : 'viajes-rutas'))}
+                    >
+                      <span>{selectedRutaLabels.length > 0 ? selectedRutaLabels.join(', ') : 'Rutas'}</span>
+                      <span>{multiSelectOpenKey === 'viajes-rutas' ? '▴' : '▾'}</span>
+                    </button>
+
+                    {multiSelectOpenKey === 'viajes-rutas' && (
+                      <div className="multi-dropdown-menu">
+                        {rutasActivas.map((ruta) => {
+                          const checked = selectedRutaIds.includes(String(ruta.id))
+                          return (
+                            <label className="multi-dropdown-option" key={ruta.id}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setViajeForm((prev) => {
+                                    const current = Array.isArray(prev.ruta_ids) ? prev.ruta_ids.map((value) => String(value)) : []
+                                    const exists = current.includes(String(ruta.id))
+                                    const next = exists
+                                      ? current.filter((value) => value !== String(ruta.id))
+                                      : [...current, String(ruta.id)]
+                                    return { ...prev, ruta_ids: next }
+                                  })
+                                }}
+                              />
+                              <span>{ruta.nombre}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <select value={viajeForm.estado_viaje_id} onChange={(e) => setViajeForm((prev) => ({ ...prev, estado_viaje_id: e.target.value }))}>
+                  <option value="">Estado de viaje</option>
+                  {(catalogRows.estados_viaje || []).filter((r) => r.activo).map((r) => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                </select>
+                <select value={viajeForm.tipo_operacion} onChange={(e) => setViajeForm((prev) => ({ ...prev, tipo_operacion: e.target.value }))}>
+                  <option value="carga">Carga</option>
+                  <option value="descarga">Descarga</option>
+                  <option value="mixto">Mixto</option>
+                </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                 <input type="number" step="0.01" placeholder="KM inicial" value={viajeForm.km_inicial} onChange={(e) => setViajeForm((prev) => ({ ...prev, km_inicial: e.target.value }))} />
                 <input type="number" step="0.01" placeholder="KM final" value={viajeForm.km_final} onChange={(e) => setViajeForm((prev) => ({ ...prev, km_final: e.target.value }))} />
                 <input placeholder="Observación" value={viajeForm.observacion} onChange={(e) => setViajeForm((prev) => ({ ...prev, observacion: e.target.value }))} />
               </div>
               <div className="actions-row">
                 {canModifyBitacora ? <button onClick={saveViaje} title={editingViajeId ? 'Actualizar viaje' : 'Crear viaje'} aria-label={editingViajeId ? 'Actualizar viaje' : 'Crear viaje'}>{editingViajeId ? 'Actualizar viaje' : <SaveIcon />}</button> : null}
+<<<<<<< HEAD
                 {editingViajeId && canModifyBitacora ? <button className="secondary-button" onClick={() => { setEditingViajeId(null); setViajeForm(createInitialViajeForm()); fetchNextViajeId() }}>Cancelar edición</button> : null}
+=======
+                {editingViajeId && canModifyBitacora ? <button className="secondary-button" onClick={() => { setEditingViajeId(null); setViajeForm(createInitialViajeForm()) }}>Cancelar edición</button> : null}
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
               </div>
               {bitacoraMessage ? <p className="helper-text">{bitacoraMessage}</p> : null}
             </div>
@@ -2589,12 +2767,19 @@ export default function App() {
             <div className="card form-card">
               <h3>Detalle del viaje</h3>
               <div className="form-grid">
+<<<<<<< HEAD
                 <SearchableSelect
                   value={selectedViajeId}
                   onChange={setSelectedViajeId}
                   placeholder="Selecciona viaje"
                   options={viajes.map((v) => ({ value: String(v.id), label: v.viaje_id }))}
                 />
+=======
+                <select value={selectedViajeId} onChange={(e) => setSelectedViajeId(e.target.value)}>
+                  <option value="">Selecciona viaje</option>
+                  {viajes.map((v) => <option key={v.id} value={v.id}>{v.viaje_id}</option>)}
+                </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                 <button className="secondary-button" onClick={() => setBitacoraTab('gestion')}>Volver a gestión</button>
               </div>
               {selectedViaje ? (
@@ -2646,12 +2831,19 @@ export default function App() {
               <div className="form-grid">
                 {!isRutaCorta ? (
                   <>
+<<<<<<< HEAD
                     <SearchableSelect
                       value={cargaForm.producto_id}
                       onChange={(nextValue) => setCargaForm((prev) => ({ ...prev, producto_id: nextValue }))}
                       placeholder="Producto"
                       options={(catalogRows.productos || []).filter((p) => p.activo).map((p) => ({ value: String(p.id), label: p.nombre }))}
                     />
+=======
+                    <select value={cargaForm.producto_id} onChange={(e) => setCargaForm((prev) => ({ ...prev, producto_id: e.target.value }))}>
+                      <option value="">Producto</option>
+                      {(catalogRows.productos || []).filter((p) => p.activo).map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                    </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                     <input type="number" step="0.01" placeholder="Cantidad" value={cargaForm.cantidad} onChange={(e) => setCargaForm((prev) => ({ ...prev, cantidad: e.target.value }))} />
                   </>
                 ) : null}
@@ -2681,12 +2873,19 @@ export default function App() {
             <div className="card">
               <h3>Personal en la ruta</h3>
               <div className="form-grid">
+<<<<<<< HEAD
                 <SearchableSelect
                   value={viajePersonalId}
                   onChange={setViajePersonalId}
                   placeholder="Selecciona estibador"
                   options={estibadores.map((p) => ({ value: String(p.id), label: p.nombre }))}
                 />
+=======
+                <select value={viajePersonalId} onChange={(e) => setViajePersonalId(e.target.value)}>
+                  <option value="">Selecciona estibador</option>
+                  {estibadores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                 {canModifyBitacora ? <button onClick={addViajePersonal}>Agregar personal</button> : null}
               </div>
               <table>
@@ -2791,6 +2990,7 @@ export default function App() {
           <div className="form-grid">
             <input type="date" value={asignacionFecha} onChange={(e) => setAsignacionFecha(e.target.value)} />
             <button onClick={() => fetchAsignaciones(asignacionFecha)}>Cargar fecha</button>
+<<<<<<< HEAD
             <SearchableSelect
               value={asignacionViajeId}
               onChange={setAsignacionViajeId}
@@ -2803,6 +3003,24 @@ export default function App() {
               placeholder="Estibador detectado (pagable)"
               options={marcasPagables.map((m) => ({ value: String(m.id), label: `${m.personal_nombre} · ${m.biometrico_id} · ${m.horas_reales_trabajo}h` }))}
             />
+=======
+            <select value={asignacionViajeId} onChange={(e) => setAsignacionViajeId(e.target.value)}>
+              <option value="">Viaje del día</option>
+              {(asignacionData.viajes || []).map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.viaje_id} · {v.placa} · {v.ruta_nombre}
+                </option>
+              ))}
+            </select>
+            <select value={asignacionMarcaId} onChange={(e) => setAsignacionMarcaId(e.target.value)}>
+              <option value="">Estibador detectado (pagable)</option>
+              {marcasPagables.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.personal_nombre} · {m.biometrico_id} · {m.horas_reales_trabajo}h
+                </option>
+              ))}
+            </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             {canModifyBitacora ? <button onClick={saveAsignacion}>Asignar</button> : null}
           </div>
           {asignacionMessage ? <p className="helper-text">{asignacionMessage}</p> : null}
@@ -2876,6 +3094,7 @@ export default function App() {
         <div className="card form-card">
           <h3>Generar liquidación semanal automática</h3>
           <div className="form-grid">
+<<<<<<< HEAD
             <SearchableSelect
               value={liquidacionSemana}
               onChange={setLiquidacionSemana}
@@ -2888,6 +3107,14 @@ export default function App() {
                 { value: '4', label: 'Semana 4 (22-fin de mes)' }
               ]}
             />
+=======
+            <select value={liquidacionSemana} onChange={(e) => setLiquidacionSemana(e.target.value)}>
+              <option value="1">Semana 1 (1-7)</option>
+              <option value="2">Semana 2 (8-14)</option>
+              <option value="3">Semana 3 (15-21)</option>
+              <option value="4">Semana 4 (22-fin de mes)</option>
+            </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             {canModifyLiquidaciones ? <button onClick={generarLiquidaciones}>Generar liquidación</button> : null}
             <button className="secondary-button" onClick={() => fetchLiquidaciones(liquidacionSemana)}>Consultar semana</button>
             {canDeleteLiquidaciones ? <button className="secondary-button" onClick={eliminarLiquidacionesSemana} title="Eliminar semana" aria-label="Eliminar semana"><TrashIcon /></button> : null}
@@ -2919,6 +3146,7 @@ export default function App() {
         <div className="card">
           <h3>Detalle de liquidación {selectedLiquidacionId ? `#${selectedLiquidacionId}` : ''}</h3>
           <table>
+<<<<<<< HEAD
             <thead><tr><th>Tipo</th><th>Referencia</th><th>Fecha</th><th>Detalle</th><th>Estibador</th><th>Monto</th><th>TXT</th></tr></thead>
             <tbody>
               {liquidacionDetalle.map((row) => (
@@ -2930,6 +3158,17 @@ export default function App() {
                   <td>{row.estibador_nombre}</td>
                   <td>{row.monto}</td>
                   <td>{row.justificado_txt === null || row.justificado_txt === undefined ? '-' : (row.justificado_txt ? 'Justificado' : 'Pendiente TXT')}</td>
+=======
+            <thead><tr><th>Viaje</th><th>Fecha</th><th>Estibador</th><th>Monto</th><th>TXT</th></tr></thead>
+            <tbody>
+              {liquidacionDetalle.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.viaje_codigo}</td>
+                  <td>{String(row.fecha || '').slice(0, 10)}</td>
+                  <td>{row.estibador_nombre}</td>
+                  <td>{row.monto}</td>
+                  <td>{row.justificado_txt ? 'Justificado' : 'Pendiente TXT'}</td>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
                 </tr>
               ))}
             </tbody>
@@ -2943,7 +3182,10 @@ export default function App() {
     const liquidacionesPendientes = (liquidaciones || []).filter((item) => String(item.estado || '').toLowerCase() !== 'pagado')
     const liquidacionesPendientesJustificadas = liquidacionesPendientes.filter((item) => String(item.justificacion_txt || '').trim().toLowerCase() === 'justificado')
     const pagoEnEdicion = (pagos || []).find((item) => item.id === editingPagoId)
+<<<<<<< HEAD
     const pagoRolEnEdicion = (pagosRolesMensuales || []).find((item) => item.id === editingPagoRolId)
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     const canModifyPagos = canModifyModule('pagos')
     const canDeletePagos = canDeleteModule('pagos')
 
@@ -2952,6 +3194,7 @@ export default function App() {
         <div className="card form-card">
           <h3>{editingPagoId ? 'Editar pago de liquidación' : 'Registrar pago de liquidación'}</h3>
           <div className="form-grid">
+<<<<<<< HEAD
             <SearchableSelect
               value={pagoForm.liquidacion_id}
               disabled={Boolean(editingPagoId)}
@@ -2969,6 +3212,28 @@ export default function App() {
               placeholder="Banco"
               options={(catalogRows.bancos || []).filter((b) => b.activo).map((banco) => ({ value: String(banco.id), label: banco.nombre }))}
             />
+=======
+            <select value={pagoForm.liquidacion_id} disabled={Boolean(editingPagoId)} onChange={(e) => setPagoForm((prev) => ({ ...prev, liquidacion_id: e.target.value }))}>
+              <option value="">Liquidación pendiente</option>
+              {pagoEnEdicion ? (
+                <option value={pagoEnEdicion.liquidacion_id}>
+                  #{pagoEnEdicion.liquidacion_id} · {pagoEnEdicion.estibador_nombre} · Total {pagoEnEdicion.monto}
+                </option>
+              ) : null}
+              {liquidacionesPendientesJustificadas.map((item) => (
+                <option key={item.id} value={item.id}>
+                  #{item.id} · {item.estibador_nombre} · Total {item.total}
+                </option>
+              ))}
+            </select>
+            <input type="date" value={pagoForm.fecha_pago} onChange={(e) => setPagoForm((prev) => ({ ...prev, fecha_pago: e.target.value }))} />
+            <select value={pagoForm.banco_id} onChange={(e) => setPagoForm((prev) => ({ ...prev, banco_id: e.target.value }))}>
+              <option value="">Banco</option>
+              {(catalogRows.bancos || []).filter((b) => b.activo).map((banco) => (
+                <option key={banco.id} value={banco.id}>{banco.nombre}</option>
+              ))}
+            </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             <input placeholder="Comprobante" value={pagoForm.comprobante} onChange={(e) => setPagoForm((prev) => ({ ...prev, comprobante: e.target.value }))} />
             <input type="number" step="0.01" placeholder="Monto (opcional)" value={pagoForm.monto} onChange={(e) => setPagoForm((prev) => ({ ...prev, monto: e.target.value }))} />
             {canModifyPagos ? <button onClick={registrarPago} title={editingPagoId ? 'Actualizar pago' : 'Registrar pago'} aria-label={editingPagoId ? 'Actualizar pago' : 'Registrar pago'}>{editingPagoId ? 'Actualizar pago' : <SaveIcon />}</button> : null}
@@ -3019,6 +3284,7 @@ export default function App() {
             </tbody>
           </table>
         </div>
+<<<<<<< HEAD
 
         <div className="card form-card">
           <h3>{editingPagoRolId ? 'Editar pago de rol mensual' : 'Registrar pago de rol mensual'}</h3>
@@ -3267,6 +3533,8 @@ export default function App() {
             </>
           )}
         </div>
+=======
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
       </section>
     )
   }
@@ -3418,6 +3686,7 @@ export default function App() {
         <div className="card form-card">
           <h3>Accesos de módulos para Admin</h3>
           <div className="form-grid">
+<<<<<<< HEAD
             <SearchableSelect
               value={selectedAdminAccessId}
               onChange={async (nextId) => {
@@ -3427,6 +3696,21 @@ export default function App() {
               placeholder="Selecciona Admin"
               options={adminAccessRows.map((row) => ({ value: String(row.id), label: `${row.nombre} · ${row.email || 'sin correo'}` }))}
             />
+=======
+            <select
+              value={selectedAdminAccessId}
+              onChange={async (e) => {
+                const nextId = e.target.value
+                setSelectedAdminAccessId(nextId)
+                await fetchAdminAccessDetail(nextId)
+              }}
+            >
+              <option value="">Selecciona Admin</option>
+              {adminAccessRows.map((row) => (
+                <option key={row.id} value={row.id}>{row.nombre} · {row.email || 'sin correo'}</option>
+              ))}
+            </select>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             <button className="secondary-button" onClick={fetchAdminAccessRows}>Actualizar lista</button>
             {canModifyAdminAccess ? <button onClick={saveAdminAccess} disabled={!selectedAdminAccessId} title="Guardar accesos" aria-label="Guardar accesos"><SaveIcon /></button> : null}
           </div>
@@ -3518,6 +3802,10 @@ export default function App() {
           </div>
 
           <section className="view-grid">
+<<<<<<< HEAD
+=======
+            <article className="stat-card"><h3>Catálogos</h3><strong>{dashboardStats.totalCatalogs}</strong></article>
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
             <article className="stat-card"><h3>Registros catálogo</h3><strong>{dashboardStats.totalRecords}</strong></article>
             <article className="stat-card"><h3>Viajes (período)</h3><strong>{dashboardTotalViajesPeriodo}</strong></article>
             <article className="stat-card"><h3>Camiones usados (período)</h3><strong>{dashboardCamionUso.length}</strong></article>
@@ -3642,11 +3930,16 @@ export default function App() {
     if (currentView === 'bitacora') return renderBitacoraView()
     if (currentView === 'biometrico') return renderBiometricoView()
     if (currentView === 'liquidaciones') return renderLiquidacionesView()
+<<<<<<< HEAD
     if (currentView === 'ajustes_personal') return renderAjustesPersonalView()
     if (currentView === 'roles_mensuales') return renderRolesMensualesView()
     if (currentView === 'pagos') return renderPagosView()
     if (currentView === 'reportes') return renderReportesView()
     if (currentView === 'personal') return renderPersonalView()
+=======
+    if (currentView === 'pagos') return renderPagosView()
+    if (currentView === 'reportes') return renderReportesView()
+>>>>>>> 980efecc979b455d5fe199dfc22f653fd4308c80
     if (currentView === 'admin_access') return renderAdminAccessView()
     if (currentView === 'empresa_logo') return renderEmpresaLogoView()
     return renderCatalogView(currentView)
