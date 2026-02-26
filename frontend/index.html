@@ -5,9 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon-truck.svg" />
     <title>Choferes - App</title>
+    <script>
+      window.addEventListener('error', (e) => {
+        const msg = `ERROR: ${e.message} at ${e.filename}:${e.lineno}:${e.colno}`
+        console.error(msg)
+        document.body.innerHTML = `<pre>${msg}</pre>` + document.body.innerHTML
+      })
+      window.addEventListener('unhandledrejection', (e) => {
+        const msg = `UNHANDLED: ${e.reason}`
+        console.error(msg)
+        document.body.innerHTML = `<pre>${msg}</pre>` + document.body.innerHTML
+      })
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">Cargando aplicación...</div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

@@ -1,4 +1,4 @@
-import React from 'react'
+﻿import React from 'react'
 
 export function TrashIcon({ size = 14 }) {
   return (
