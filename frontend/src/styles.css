@@ -162,6 +162,8 @@ select:focus-visible {
 }
 
 .menu-item {
+  display: block;
+  text-decoration: none;
   text-align: left;
   padding: 10px 12px;
   background: transparent;
@@ -183,6 +185,8 @@ select:focus-visible {
 }
 
 .submenu-item {
+  display: block;
+  text-decoration: none;
   text-align: left;
   padding: 8px 10px;
   background: transparent;
@@ -849,6 +853,71 @@ tr:hover td {
   flex-wrap: wrap;
 }
 
+.bitacora-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 1.5rem;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.pagination-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  cursor: pointer;
+  color: #111827;
+  transition: all 0.2s ease;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.pagination-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.pagination-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #f9fafb;
+  border-color: #e5e7eb;
+}
+
+.pagination-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+  text-align: center;
+}
+
+.pagination-date {
+  font-weight: 600;
+  color: #111827;
+  font-size: 14px;
+}
+
+.pagination-counter {
+  color: #6b7280;
+  font-size: 13px;
+}
+
 .form-subtitle {
   margin: 14px 0 8px;
   color: var(--text-secondary);
@@ -997,3 +1066,34 @@ tr:hover td {
     min-height: 56px;
   }
 }
+
+/* ─── Paginador universal ─────────────────────────────────────────────────── */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 4px;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+.pager-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: inherit;
+}
+.pager-btn:disabled { opacity: 0.35; cursor: default; }
+.pager-btn:not(:disabled):hover { background: var(--bg-hover, rgba(0,0,0,.06)); }
+.pager-size {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  background: transparent;
+  color: inherit;
+}
+.pager-info, .pager-pages { white-space: nowrap; }

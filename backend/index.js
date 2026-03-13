@@ -58,8 +58,8 @@ const CATALOG_CONFIG = {
   },
   rutas: {
     table: 'rutas',
-    select: 'id, nombre, tipo, distancia_km, valor, activo, created_at',
-    insertFields: ['nombre', 'tipo', 'distancia_km', 'valor', 'activo'],
+    select: 'id, nombre, tipo, distancia_km, valor_a_cobrar, valor_a_pagar, activo, created_at',
+    insertFields: ['nombre', 'tipo', 'distancia_km', 'valor_a_cobrar', 'valor_a_pagar', 'activo'],
     requiredFields: ['nombre', 'tipo']
   },
   estados_viaje: {
@@ -105,6 +105,8 @@ const MODULE_KEYS = [
   'bitacora',
   'biometrico',
   'liquidaciones',
+  'ajustes_personal',
+  'roles_mensuales',
   'pagos',
   'reportes',
   'base_datos',
@@ -721,19 +723,29 @@ function parseMetricaRutaCortaPayload(payload) {
 }
 
 async function buildPersonalLookup() {
+  const normalizeKey = (value) => String(value || '').trim();
+  const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
+
   const result = await db.query(
     `SELECT p.id, p.documento
      FROM personal p
-     JOIN personal_role_assignments pra ON pra.personal_id = p.id
-     JOIN personal_roles pr ON pr.id = pra.role_id
-     WHERE p.activo=TRUE AND pr.activo=TRUE AND LOWER(pr.nombre) = 'estibador'`
+     WHERE p.activo=TRUE`
   );
   const byDocumento = new Map();
   const byId = new Map();
 
   for (const row of result.rows) {
-    if (hasValue(row.documento)) byDocumento.set(String(row.documento).trim(), row.id);
-    byId.set(String(row.id), row.id);
+    if (hasValue(row.documento)) {
+      const docRaw = normalizeKey(row.documento);
+      const docDigits = normalizeDigits(row.documento);
+      if (docRaw) byDocumento.set(docRaw, row.id);
+      if (docDigits) byDocumento.set(docDigits, row.id);
+    }
+
+    const idRaw = normalizeKey(row.id);
+    const idDigits = normalizeDigits(row.id);
+    if (idRaw) byId.set(idRaw, row.id);
+    if (idDigits) byId.set(idDigits, row.id);
   }
 
   return { byDocumento, byId };
@@ -894,7 +906,7 @@ function splitAmount(total, parts) {
   return Array.from({ length: parts }, (_, index) => ((base + (index < remainder ? 1 : 0)) / 100));
 }
 
-async function computePagoRutaCorta(viajeId, tipoOperacion) {
+async function computePagoRutaCorta(viajeId, tipoOperacion, numeroPersonas = 1) {
   const carga = await db.query(
     `SELECT COALESCE(SUM(valor_carga), 0)::numeric(12,2) AS total_carga
      FROM viaje_carga
@@ -903,11 +915,15 @@ async function computePagoRutaCorta(viajeId, tipoOperacion) {
   );
 
   const totalCarga = Number(carga.rows[0]?.total_carga || 0);
+  console.log(`[DEBUG] computePagoRutaCorta viaje=${viajeId}, tipoOp=${tipoOperacion}, totalCarga=${totalCarga}, numeroPersonas=${numeroPersonas}`);
+  
+  // Buscar métrica que coincida con el rango de carga Y el número de personas
   const metric = await db.query(
-    `SELECT valor_pagar
+    `SELECT valor_pagar, numero_personas
      FROM metricas_ruta_corta
      WHERE activo = TRUE
        AND LOWER(tipo_operacion) IN ($1, 'mixto')
+       AND numero_personas = $3
        AND (
          (
            condicion_valor_carga_desde IS NOT NULL
@@ -924,46 +940,80 @@ async function computePagoRutaCorta(viajeId, tipoOperacion) {
               COALESCE(condicion_valor_carga_hasta, condicion_valor_carga) ASC,
               id DESC
      LIMIT 1`,
-    [normalizeOperacion(tipoOperacion), totalCarga]
+    [normalizeOperacion(tipoOperacion), totalCarga, numeroPersonas]
   );
 
-  return Number(metric.rows[0]?.valor_pagar || 0);
+  // valor_pagar es el pago por CADA persona, multiplicamos por el número de personas para obtener el total
+  const valorPorPersona = Number(metric.rows[0]?.valor_pagar || 0);
+  const result = round2(valorPorPersona * numeroPersonas);
+  console.log(`[DEBUG] computePagoRutaCorta resultado=${result} (${valorPorPersona} x ${numeroPersonas}), metricaEncontrada=${metric.rowCount}`);
+  return result;
 }
 
 async function computePagoRutaLarga(viajeId, tipoOperacion) {
+  const tipoNorm = normalizeOperacion(tipoOperacion);
+  
+  // Si el viaje es 'mixto', buscar métricas para cualquier tipo de operación
+  // Si es 'carga' o 'descarga', buscar solo ese tipo específico (o 'mixto' como fallback)
+  let tiposPermitidos;
+  if (tipoNorm === 'mixto') {
+    tiposPermitidos = ['carga', 'descarga', 'mixto'];
+  } else {
+    tiposPermitidos = [tipoNorm, 'mixto'];
+  }
+
   const rows = await db.query(
-    `SELECT vc.cantidad,
+    `SELECT vc.id, vc.cantidad, vc.producto_id,
             COALESCE(metric.valor_unitario, 0) AS valor_unitario
      FROM viaje_carga vc
      LEFT JOIN LATERAL (
-       SELECT ml.valor_unitario
+       SELECT ml.valor_unitario, ml.tipo_operacion
        FROM metricas_ruta_larga ml
        WHERE ml.activo = TRUE
          AND ml.producto_id = vc.producto_id
-         AND LOWER(ml.tipo_operacion) IN ($2, 'mixto')
-       ORDER BY CASE WHEN LOWER(ml.tipo_operacion) = $2 THEN 0 ELSE 1 END, ml.id DESC
+         AND LOWER(ml.tipo_operacion) = ANY($2)
+       ORDER BY CASE 
+         WHEN LOWER(ml.tipo_operacion) = 'carga' THEN 0
+         WHEN LOWER(ml.tipo_operacion) = 'descarga' THEN 1
+         WHEN LOWER(ml.tipo_operacion) = 'mixto' THEN 2
+         ELSE 3 
+       END, ml.id DESC
        LIMIT 1
      ) AS metric ON TRUE
      WHERE vc.viaje_ref_id = $1`,
-    [viajeId, normalizeOperacion(tipoOperacion)]
+    [viajeId, tiposPermitidos]
   );
 
-  return round2(rows.rows.reduce((acc, row) => acc + (Number(row.cantidad || 0) * Number(row.valor_unitario || 0)), 0));
+  console.log(`[DEBUG] computePagoRutaLarga viaje=${viajeId}, tipoOp=${tipoOperacion}, cargas=${rows.rowCount}`, rows.rows.map(r => ({ cantidad: r.cantidad, producto_id: r.producto_id, valor_unitario: r.valor_unitario })));
+
+  // Solo paga por cantidad × valor_unitario (del catálogo de ruta larga)
+  const result = round2(rows.rows.reduce((acc, row) => acc + (Number(row.cantidad || 0) * Number(row.valor_unitario || 0)), 0));
+  console.log(`[DEBUG] computePagoRutaLarga resultado=${result}`);
+  return result;
 }
 
-async function computePagoViajeEstiba(viaje) {
+async function computePagoViajeEstiba(viaje, numeroPersonas = 1) {
   const tipoRuta = normalizeOperacion(viaje.ruta_tipo);
+  console.log(`[DEBUG] computePagoViajeEstiba viaje=${viaje.viaje_id} (id=${viaje.id}), tipoRuta=${tipoRuta}, tipoOperacion=${viaje.tipo_operacion}, numeroPersonas=${numeroPersonas}`);
+  
   if (tipoRuta === 'corta') {
-    return computePagoRutaCorta(viaje.id, viaje.tipo_operacion);
+    const pago = await computePagoRutaCorta(viaje.id, viaje.tipo_operacion, numeroPersonas);
+    console.log(`[DEBUG] Viaje ${viaje.viaje_id} es CORTA, pago=${pago}`);
+    return pago;
   }
 
   if (tipoRuta === 'larga') {
-    return computePagoRutaLarga(viaje.id, viaje.tipo_operacion);
+    const pago = await computePagoRutaLarga(viaje.id, viaje.tipo_operacion);
+    console.log(`[DEBUG] Viaje ${viaje.viaje_id} es LARGA, pago=${pago}`);
+    return pago;
   }
 
+  // Para rutas mixtas, pagar AMBOS: ruta larga + ruta corta
   const montoLarga = await computePagoRutaLarga(viaje.id, viaje.tipo_operacion);
-  if (montoLarga > 0) return montoLarga;
-  return computePagoRutaCorta(viaje.id, viaje.tipo_operacion);
+  const montoCorta = await computePagoRutaCorta(viaje.id, viaje.tipo_operacion, numeroPersonas);
+  const total = round2(montoLarga + montoCorta);
+  console.log(`[DEBUG] Viaje ${viaje.viaje_id} es MIXTA, montoLarga=${montoLarga}, montoCorta=${montoCorta}, total=${total}`);
+  return total;
 }
 
 async function buildLiquidacionSemana(semanaInicio, semanaFin) {
@@ -991,7 +1041,7 @@ async function buildLiquidacionSemana(semanaInicio, semanaFin) {
 
     if (asignaciones.rowCount === 0) continue;
 
-    const pagoViaje = round2(await computePagoViajeEstiba(viaje));
+    const pagoViaje = round2(await computePagoViajeEstiba(viaje, asignaciones.rowCount));
     const montos = splitAmount(pagoViaje, asignaciones.rowCount);
 
     asignaciones.rows.forEach((asignacion, index) => {
@@ -1000,7 +1050,8 @@ async function buildLiquidacionSemana(semanaInicio, semanaFin) {
         personal_id: personalId,
         estibador_nombre: asignacion.estibador_nombre,
         total: 0,
-        detalles: []
+        detalles: [],
+        ajustes: []
       };
 
       const monto = round2(montos[index] || 0);
@@ -1014,6 +1065,67 @@ async function buildLiquidacionSemana(semanaInicio, semanaFin) {
       });
 
       byEstibador.set(personalId, current);
+    });
+  }
+
+  // Aplicar ajustes semanales (sobrantes y faltantes) para estibadores
+  const personasIds = Array.from(byEstibador.keys());
+  
+  // Buscar todos los ajustes semanales activos (incluso de personas sin viajes)
+  // Excluir ajustes de cuota única que ya fueron aplicados en una liquidación anterior
+  const ajustesSemanales = await db.query(
+    `SELECT ap.id, ap.personal_id, ap.tipo, ap.detalle, ap.valor_total, ap.en_cuotas, ap.cantidad_cuotas, ap.cuota_actual,
+            p.nombre, p.apellidos
+     FROM ajustes_personal ap
+     JOIN personal p ON p.id = ap.personal_id
+     WHERE ap.estado = 'activo'
+       AND ap.frecuencia = 'semanal'
+       AND ap.fecha_inicio <= $1
+       AND (
+         ap.en_cuotas = TRUE
+         OR NOT EXISTS (
+           SELECT 1 FROM ajustes_aplicaciones aa
+           WHERE aa.ajuste_id = ap.id
+         )
+       )`,
+    [semanaFin]
+  );
+  
+  for (const ajuste of ajustesSemanales.rows) {
+    const personalId = Number(ajuste.personal_id);
+    
+    // Si la persona no está en el mapa, agregarla
+    if (!byEstibador.has(personalId)) {
+      byEstibador.set(personalId, {
+        personal_id: personalId,
+        estibador_nombre: `${ajuste.nombre} ${ajuste.apellidos || ''}`.trim(),
+        total: 0,
+        detalles: [],
+        ajustes: []
+      });
+    }
+    
+    const current = byEstibador.get(personalId);
+
+    const montoAplicar = ajuste.en_cuotas 
+      ? Number(ajuste.valor_total) / Number(ajuste.cantidad_cuotas)
+      : Number(ajuste.valor_total);
+
+    // sobrante suma, faltante resta
+    if (ajuste.tipo === 'sobrante') {
+      current.total = round2(current.total + montoAplicar);
+    } else if (ajuste.tipo === 'faltante') {
+      current.total = round2(current.total - montoAplicar);
+    }
+
+    current.ajustes.push({
+      ajuste_id: ajuste.id,
+      tipo: ajuste.tipo,
+      detalle: ajuste.detalle,
+      monto: montoAplicar,
+      cuota_numero: ajuste.cuota_actual + 1,
+      en_cuotas: ajuste.en_cuotas,
+      cantidad_cuotas: ajuste.cantidad_cuotas
     });
   }
 
@@ -1043,22 +1155,49 @@ async function listLiquidaciones(semanaInicio = null, semanaFin = null) {
               ELSE l.estado
             END AS estado,
             l.created_at,
-            COUNT(ld.id)::int AS detalles_count,
+            (
+              (SELECT COUNT(*) FROM liquidacion_detalle ld2 WHERE ld2.liquidacion_id = l.id)
+              +
+              (SELECT COUNT(*) FROM liquidacion_ajustes_detalle lad2 WHERE lad2.liquidacion_id = l.id)
+            )::int AS detalles_count,
             CASE
-              WHEN COUNT(ld.id) = 0 THEN 'Sin detalle'
-              WHEN COUNT(ld.id) = SUM(
-                CASE
-                  WHEN ld.id IS NOT NULL AND EXISTS (
-                    SELECT 1
-                    FROM viajes vj
-                    JOIN biometrico_marcas bm
-                      ON bm.personal_id = l.estibador_personal_id
-                     AND bm.fecha = vj.fecha
-                     AND bm.aplica_pago = TRUE
-                    WHERE vj.id = ld.viaje_id
-                  ) THEN 1
-                  ELSE 0
-                END
+              WHEN (
+                (SELECT COUNT(*) FROM liquidacion_detalle ld2 WHERE ld2.liquidacion_id = l.id)
+                +
+                (SELECT COUNT(*) FROM liquidacion_ajustes_detalle lad2 WHERE lad2.liquidacion_id = l.id)
+              ) = 0 THEN 'Sin detalle'
+              WHEN (
+                (
+                  SELECT COUNT(*)
+                  FROM liquidacion_detalle ld2
+                  JOIN viajes vj ON vj.id = ld2.viaje_id
+                  WHERE ld2.liquidacion_id = l.id
+                    AND EXISTS (
+                      SELECT 1
+                      FROM biometrico_marcas bm
+                      WHERE bm.personal_id = l.estibador_personal_id
+                        AND bm.fecha = vj.fecha
+                        AND bm.aplica_pago = TRUE
+                    )
+                )
+                +
+                (
+                  SELECT COUNT(*)
+                  FROM liquidacion_ajustes_detalle lad2
+                  JOIN ajustes_personal ap2 ON ap2.id = lad2.ajuste_id
+                  WHERE lad2.liquidacion_id = l.id
+                    AND EXISTS (
+                      SELECT 1
+                      FROM biometrico_marcas bm
+                      WHERE bm.personal_id = l.estibador_personal_id
+                        AND bm.fecha = ap2.fecha_inicio
+                        AND bm.aplica_pago = TRUE
+                    )
+                )
+              ) = (
+                (SELECT COUNT(*) FROM liquidacion_detalle ld2 WHERE ld2.liquidacion_id = l.id)
+                +
+                (SELECT COUNT(*) FROM liquidacion_ajustes_detalle lad2 WHERE lad2.liquidacion_id = l.id)
               ) THEN 'Justificado'
               ELSE 'Pendiente TXT'
             END AS justificacion_txt
@@ -1077,20 +1216,43 @@ async function listLiquidaciones(semanaInicio = null, semanaFin = null) {
 async function getLiquidacionTxtStatus(queryable, liquidacionId) {
   const result = await queryable.query(
     `SELECT CASE
-              WHEN COUNT(ld.id) = 0 THEN 'Sin detalle'
-              WHEN COUNT(ld.id) = SUM(
-                CASE
-                  WHEN ld.id IS NOT NULL AND EXISTS (
-                    SELECT 1
-                    FROM viajes vj
-                    JOIN biometrico_marcas bm
-                      ON bm.personal_id = l.estibador_personal_id
-                     AND bm.fecha = vj.fecha
-                     AND bm.aplica_pago = TRUE
-                    WHERE vj.id = ld.viaje_id
-                  ) THEN 1
-                  ELSE 0
-                END
+              WHEN (
+                (SELECT COUNT(*) FROM liquidacion_detalle ld2 WHERE ld2.liquidacion_id = l.id)
+                +
+                (SELECT COUNT(*) FROM liquidacion_ajustes_detalle lad2 WHERE lad2.liquidacion_id = l.id)
+              ) = 0 THEN 'Sin detalle'
+              WHEN (
+                (
+                  SELECT COUNT(*)
+                  FROM liquidacion_detalle ld2
+                  JOIN viajes vj ON vj.id = ld2.viaje_id
+                  WHERE ld2.liquidacion_id = l.id
+                    AND EXISTS (
+                      SELECT 1
+                      FROM biometrico_marcas bm
+                      WHERE bm.personal_id = l.estibador_personal_id
+                        AND bm.fecha = vj.fecha
+                        AND bm.aplica_pago = TRUE
+                    )
+                )
+                +
+                (
+                  SELECT COUNT(*)
+                  FROM liquidacion_ajustes_detalle lad2
+                  JOIN ajustes_personal ap2 ON ap2.id = lad2.ajuste_id
+                  WHERE lad2.liquidacion_id = l.id
+                    AND EXISTS (
+                      SELECT 1
+                      FROM biometrico_marcas bm
+                      WHERE bm.personal_id = l.estibador_personal_id
+                        AND bm.fecha = ap2.fecha_inicio
+                        AND bm.aplica_pago = TRUE
+                    )
+                )
+              ) = (
+                (SELECT COUNT(*) FROM liquidacion_detalle ld2 WHERE ld2.liquidacion_id = l.id)
+                +
+                (SELECT COUNT(*) FROM liquidacion_ajustes_detalle lad2 WHERE lad2.liquidacion_id = l.id)
               ) THEN 'Justificado'
               ELSE 'Pendiente TXT'
             END AS justificacion_txt
@@ -1109,6 +1271,30 @@ function parseBiometricoText(fileText) {
   const errors = [];
   const rows = [];
 
+  function normalizeHeaderToken(value) {
+    return String(value || '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '');
+  }
+
+  function isValidHeader(parts) {
+    if (!Array.isArray(parts) || parts.length !== BIOMETRICO_HEADERS.length) return false;
+    const normalized = parts.map(normalizeHeaderToken);
+    return (
+      normalized[0].includes('id') && normalized[0].includes('persona') &&
+      normalized[1].includes('nombre') &&
+      normalized[2].includes('departamento') &&
+      normalized[3] === 'fecha' &&
+      normalized[4].includes('primera') && normalized[4].includes('perforacion') &&
+      normalized[5].includes('ultima') && normalized[5].includes('perforacion') &&
+      normalized[6].includes('numero') && normalized[6].includes('perforaciones') &&
+      normalized[7].includes('horas') && normalized[7].includes('reales') && normalized[7].includes('trabajo')
+    );
+  }
+
   const lines = String(fileText || '')
     .replace(/^\uFEFF/, '')
     .split(/\r?\n/)
@@ -1118,17 +1304,25 @@ function parseBiometricoText(fileText) {
     return { rows, errors: [{ row: 0, column: '*', message: 'archivo vacio' }] };
   }
 
-  const header = lines[0].split('|').map((value) => value.trim());
-  if (header.length !== BIOMETRICO_HEADERS.length || BIOMETRICO_HEADERS.some((name, idx) => header[idx] !== name)) {
+  let headerIndex = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const maybeHeader = lines[index].split('|').map((value) => value.trim());
+    if (isValidHeader(maybeHeader)) {
+      headerIndex = index;
+      break;
+    }
+  }
+
+  if (headerIndex === -1) {
     errors.push({
       row: 1,
       column: 'header',
-      message: `columnas invalidas, se esperaba: ${BIOMETRICO_HEADERS.join('|')}`
+      message: 'columnas invalidas. Encabezado esperado (acepta espacios/acentos): ID persona|Nombre|Departamento|Fecha|Primera perforacion|Ultima perforacion|Numero perforaciones|Horas reales de trabajo'
     });
     return { rows, errors };
   }
 
-  for (let index = 1; index < lines.length; index += 1) {
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
     const rawLine = lines[index];
     const parts = rawLine.split('|').map((value) => value.trim());
     const rowNumber = index + 1;
@@ -1156,8 +1350,8 @@ function parseBiometricoText(fileText) {
     if (!isValidTime(row.ultima_perforacion)) errors.push({ row: rowNumber, column: 'Ultima_perforacion', message: 'hora invalida (HH:MM)' });
 
     const perforaciones = Number(row.numero_perforaciones);
-    if (!Number.isInteger(perforaciones) || perforaciones < 2) {
-      errors.push({ row: rowNumber, column: 'Numero_perforaciones', message: 'debe ser entero >= 2' });
+    if (!Number.isInteger(perforaciones) || perforaciones < 1) {
+      errors.push({ row: rowNumber, column: 'Numero_perforaciones', message: 'debe ser entero >= 1' });
     }
 
     const horas = Number(row.horas_reales_trabajo);
@@ -1245,14 +1439,32 @@ app.post('/api/catalogs/:catalog', authMiddleware, requireModulePermission('base
       }
 
       const created = await db.query(
-        `INSERT INTO personal(nombre, documento, banco_id, numero_cuenta, user_id, activo)
-         VALUES($1,$2,$3,$4,$5,$6)
+        `INSERT INTO personal(
+          nombre, apellidos, documento, banco_id, numero_cuenta,
+          celular, direccion, correo,
+          afiliado_iess, fecha_afiliacion_iess, sueldo_iess, sueldo_real,
+          descuenta_iess, cobra_decimo_tercero, cobra_decimo_cuarto, cobra_fondo_reserva,
+          user_id, activo
+        )
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          RETURNING id`,
         [
           req.body.nombre,
+          req.body.apellidos || null,
           req.body.documento || null,
           hasValue(req.body.banco_id) ? Number(req.body.banco_id) : null,
           req.body.numero_cuenta || null,
+          req.body.celular || null,
+          req.body.direccion || null,
+          req.body.correo || null,
+          req.body.afiliado_iess === true,
+          hasValue(req.body.fecha_afiliacion_iess) ? String(req.body.fecha_afiliacion_iess) : null,
+          hasValue(req.body.sueldo_iess) ? Number(req.body.sueldo_iess) : null,
+          hasValue(req.body.sueldo_real) ? Number(req.body.sueldo_real) : null,
+          req.body.descuenta_iess === true,
+          req.body.cobra_decimo_tercero === true,
+          req.body.cobra_decimo_cuarto === true,
+          req.body.cobra_fondo_reserva === true,
           userId,
           req.body.activo !== false
         ]
@@ -1349,11 +1561,27 @@ app.put('/api/catalogs/:catalog/:id', authMiddleware, requireModulePermission('b
 
       const currentUserId = hasValue(exists.rows[0].user_id) ? Number(exists.rows[0].user_id) : null;
 
-      const fields = ['nombre', 'documento', 'banco_id', 'numero_cuenta', 'activo'].filter((field) => req.body[field] !== undefined);
+      const fields = [
+        'nombre', 'apellidos', 'documento', 'banco_id', 'numero_cuenta',
+        'celular', 'direccion', 'correo',
+        'afiliado_iess', 'fecha_afiliacion_iess', 'sueldo_iess', 'sueldo_real',
+        'descuenta_iess', 'cobra_decimo_tercero', 'cobra_decimo_cuarto', 'cobra_fondo_reserva',
+        'activo'
+      ].filter((field) => req.body[field] !== undefined);
       if (fields.length > 0) {
         const setSql = fields.map((field, index) => `${field}=$${index + 1}`).join(', ');
         const values = fields.map((field) => {
           if (field === 'banco_id') return hasValue(req.body[field]) ? Number(req.body[field]) : null;
+          if (field === 'sueldo_iess' || field === 'sueldo_real') return hasValue(req.body[field]) ? Number(req.body[field]) : null;
+          if (field === 'fecha_afiliacion_iess') return hasValue(req.body[field]) ? String(req.body[field]) : null;
+          if (
+            field === 'afiliado_iess' ||
+            field === 'descuenta_iess' ||
+            field === 'cobra_decimo_tercero' ||
+            field === 'cobra_decimo_cuarto' ||
+            field === 'cobra_fondo_reserva' ||
+            field === 'activo'
+          ) return req.body[field] === true;
           return req.body[field];
         });
         values.push(personalId);
@@ -1679,20 +1907,31 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
     const parsed = parseBiometricoText(text);
     const personalLookup = await buildPersonalLookup();
     const rowErrors = [...parsed.errors];
+    const rowWarnings = [];
     const duplicateRowsSet = new Set();
     const mappedRows = [];
+
+    const normalizeLookupValue = (value) => String(value || '').trim();
+    const normalizeLookupDigits = (value) => String(value || '').replace(/\D/g, '');
 
     for (const row of parsed.rows) {
       const duplicateKey = `${row.id_persona}|${row.fecha}`;
       if (duplicateRowsSet.has(duplicateKey)) {
-        rowErrors.push({ row: row.rowNumber, column: 'ID_persona', message: 'registro duplicado dentro del archivo para la misma fecha' });
+        rowWarnings.push({ row: row.rowNumber, column: 'ID_persona', message: 'registro duplicado dentro del archivo para la misma fecha (omitido)' });
         continue;
       }
       duplicateRowsSet.add(duplicateKey);
 
-      const personalId = personalLookup.byDocumento.get(row.id_persona) || personalLookup.byId.get(row.id_persona);
+      const lookupRaw = normalizeLookupValue(row.id_persona);
+      const lookupDigits = normalizeLookupDigits(row.id_persona);
+      const personalId =
+        personalLookup.byDocumento.get(lookupRaw) ||
+        personalLookup.byDocumento.get(lookupDigits) ||
+        personalLookup.byId.get(lookupRaw) ||
+        personalLookup.byId.get(lookupDigits);
+
       if (!personalId) {
-        rowErrors.push({ row: row.rowNumber, column: 'ID_persona', message: `ID ${row.id_persona} no existe en personal` });
+        rowWarnings.push({ row: row.rowNumber, column: 'ID_persona', message: `ID ${row.id_persona} no existe en personal (omitido)` });
         continue;
       }
 
@@ -1737,6 +1976,7 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
     }
 
     const duplicateInDbErrors = [];
+    const rowsToInsert = [];
     for (const row of mappedRows) {
       const exists = await db.query(
         `SELECT id
@@ -1746,14 +1986,18 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
       );
       if (exists.rowCount > 0) {
         duplicateInDbErrors.push({
-          row: '*',
+          row: row.rowNumber || '*',
           column: 'duplicado',
-          message: `marca duplicada ya existe para personal ${row.personal_id} en fecha ${row.fecha}`
+          message: `marca duplicada ya existe para personal ${row.personal_id} en fecha ${row.fecha} (omitido)`
         });
+      } else {
+        rowsToInsert.push(row);
       }
     }
 
-    if (duplicateInDbErrors.length > 0) {
+    rowWarnings.push(...duplicateInDbErrors);
+
+    if (rowsToInsert.length === 0) {
       const failedImport = await db.query(
         `INSERT INTO biometrico_imports(file_name, file_hash, import_date, total_rows, valid_rows, status, errors_json, created_by)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8)
@@ -1765,15 +2009,15 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
           parsed.rows.length,
           0,
           'error',
-          JSON.stringify(duplicateInDbErrors),
+          JSON.stringify(rowWarnings),
           req.user.id
         ]
       );
 
       return res.status(400).json({
-        error: 'archivo con duplicados contra datos existentes',
+        error: 'no hay filas validas para importar',
         import_id: failedImport.rows[0].id,
-        details: duplicateInDbErrors
+        details: rowWarnings
       });
     }
 
@@ -1784,18 +2028,18 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
       [
         req.file.originalname,
         fileHash,
-        mappedRows[0]?.fecha || null,
+        rowsToInsert[0]?.fecha || null,
         parsed.rows.length,
-        mappedRows.length,
-        'success',
-        null,
+        rowsToInsert.length,
+        rowWarnings.length > 0 ? 'success_with_warnings' : 'success',
+        rowWarnings.length > 0 ? JSON.stringify(rowWarnings) : null,
         req.user.id
       ]
     );
 
     const importId = importResult.rows[0].id;
 
-    for (const row of mappedRows) {
+    for (const row of rowsToInsert) {
       await db.query(
         `INSERT INTO biometrico_marcas(
            import_id, personal_id, biometrico_id, nombre_txt, departamento_txt, fecha,
@@ -1821,13 +2065,16 @@ app.post('/api/biometrico/import', authMiddleware, requireModulePermission('biom
       ok: true,
       import_id: importId,
       total_rows: parsed.rows.length,
-      valid_rows: mappedRows.length
+      valid_rows: rowsToInsert.length,
+      warning_rows: rowWarnings.length,
+      details: rowWarnings
     });
 
     await auditLog(req.user.id, 'biometrico_imports', importId, 'import_txt_success', {
       file_name: req.file.originalname,
       total_rows: parsed.rows.length,
-      valid_rows: mappedRows.length
+      valid_rows: rowsToInsert.length,
+      warning_rows: rowWarnings.length
     });
   } catch (err) {
     console.error(err);
@@ -1960,6 +2207,49 @@ app.post('/api/liquidaciones/generar', authMiddleware, requireModulePermission('
 
     await client.query('BEGIN');
 
+    // Obtener ajustes que se van a eliminar para revertir cuota_actual
+    const ajustesAEliminar = await client.query(
+      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+       FROM ajustes_aplicaciones aa
+       JOIN liquidacion_ajustes_detalle lad ON lad.aplicacion_id = aa.id
+       WHERE lad.liquidacion_id IN (
+         SELECT id FROM liquidaciones WHERE semana_inicio = $1 AND semana_fin = $2
+       )`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Borrar liquidacion_ajustes_detalle primero
+    await client.query(
+      `DELETE FROM liquidacion_ajustes_detalle
+       WHERE liquidacion_id IN (
+         SELECT id FROM liquidaciones WHERE semana_inicio = $1 AND semana_fin = $2
+       )`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Borrar ajustes_aplicaciones de liquidaciones semanales
+    await client.query(
+      `DELETE FROM ajustes_aplicaciones
+       WHERE referencia_tipo = 'liquidacion_semanal'
+         AND referencia_inicio = $1
+         AND referencia_fin = $2`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Revertir cuota_actual de los ajustes eliminados
+    for (const ajuste of ajustesAEliminar.rows) {
+      await client.query(
+        `UPDATE ajustes_personal
+         SET cuota_actual = cuota_actual - 1,
+             estado = CASE 
+               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+               ELSE estado
+             END
+         WHERE id = $1`,
+        [ajuste.ajuste_id]
+      );
+    }
+
     await client.query(
       `DELETE FROM liquidacion_detalle
        WHERE liquidacion_id IN (
@@ -1984,6 +2274,44 @@ app.post('/api/liquidaciones/generar', authMiddleware, requireModulePermission('
            VALUES($1,$2,$3,$4)`,
           [liquidacionId, detalle.viaje_id, detalle.asignacion_id, detalle.monto]
         );
+      }
+
+      // Guardar ajustes semanales aplicados (sobrantes/faltantes)
+      if (item.ajustes && item.ajustes.length > 0) {
+        for (const ajuste of item.ajustes) {
+          // Crear aplicación
+          const aplicacion = await client.query(
+            `INSERT INTO ajustes_aplicaciones(
+              ajuste_id, personal_id, referencia_tipo, referencia_inicio, referencia_fin,
+              cuota_numero, monto_aplicado, created_by
+            ) VALUES($1, $2, 'liquidacion_semanal', $3, $4, $5, $6, $7)
+            RETURNING id`,
+            [ajuste.ajuste_id, item.personal_id, semana_inicio, semana_fin, 
+             ajuste.cuota_numero, ajuste.monto, req.user.id]
+          );
+
+          // Insertar en detalle de liquidación
+          await client.query(
+            `INSERT INTO liquidacion_ajustes_detalle(
+              liquidacion_id, ajuste_id, aplicacion_id, tipo, detalle, monto
+            ) VALUES($1, $2, $3, $4, $5, $6)`,
+            [liquidacionId, ajuste.ajuste_id, aplicacion.rows[0].id, ajuste.tipo, ajuste.detalle, ajuste.monto]
+          );
+
+          // Actualizar cuota actual del ajuste
+          await client.query(
+            'UPDATE ajustes_personal SET cuota_actual = $1 WHERE id = $2',
+            [ajuste.cuota_numero, ajuste.ajuste_id]
+          );
+
+          // Si no es en cuotas (aplicación única) o es la última cuota, marcar como finalizado
+          if (!ajuste.en_cuotas || (ajuste.en_cuotas && ajuste.cuota_numero >= ajuste.cantidad_cuotas)) {
+            await client.query(
+              'UPDATE ajustes_personal SET estado = $1 WHERE id = $2',
+              ['finalizado', ajuste.ajuste_id]
+            );
+          }
+        }
       }
     }
 
@@ -2079,6 +2407,49 @@ app.delete('/api/liquidaciones', authMiddleware, requireModulePermission('liquid
 
     await client.query('BEGIN');
 
+    // Obtener ajustes que se van a eliminar para revertir cuota_actual
+    const ajustesAEliminar = await client.query(
+      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+       FROM ajustes_aplicaciones aa
+       JOIN liquidacion_ajustes_detalle lad ON lad.aplicacion_id = aa.id
+       WHERE lad.liquidacion_id IN (
+         SELECT id FROM liquidaciones WHERE semana_inicio = $1 AND semana_fin = $2
+       )`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Borrar liquidacion_ajustes_detalle primero
+    await client.query(
+      `DELETE FROM liquidacion_ajustes_detalle
+       WHERE liquidacion_id IN (
+         SELECT id FROM liquidaciones WHERE semana_inicio = $1 AND semana_fin = $2
+       )`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Borrar ajustes_aplicaciones de liquidaciones semanales
+    await client.query(
+      `DELETE FROM ajustes_aplicaciones
+       WHERE referencia_tipo = 'liquidacion_semanal'
+         AND referencia_inicio = $1
+         AND referencia_fin = $2`,
+      [semana_inicio, semana_fin]
+    );
+
+    // Revertir cuota_actual de los ajustes eliminados
+    for (const ajuste of ajustesAEliminar.rows) {
+      await client.query(
+        `UPDATE ajustes_personal
+         SET cuota_actual = cuota_actual - 1,
+             estado = CASE 
+               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+               ELSE estado
+             END
+         WHERE id = $1`,
+        [ajuste.ajuste_id]
+      );
+    }
+
     await client.query(
       `DELETE FROM liquidacion_detalle
        WHERE liquidacion_id IN (
@@ -2118,24 +2489,84 @@ app.delete('/api/liquidaciones', authMiddleware, requireModulePermission('liquid
 app.get('/api/liquidaciones/:id/detalle', authMiddleware, requireModulePermission('liquidaciones', 'can_access'), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const result = await db.query(
-      `SELECT ld.id, ld.liquidacion_id, ld.viaje_id, v.viaje_id AS viaje_codigo, v.fecha,
-              ld.asignacion_id, p.nombre AS estibador_nombre, ld.monto, ld.created_at,
-              CASE WHEN EXISTS (
-                SELECT 1
-                FROM biometrico_marcas bm
-                WHERE bm.personal_id = l.estibador_personal_id
-                  AND bm.fecha = v.fecha
-                  AND bm.aplica_pago = TRUE
-              ) THEN TRUE ELSE FALSE END AS justificado_txt
-       FROM liquidacion_detalle ld
-       JOIN liquidaciones l ON l.id = ld.liquidacion_id
-       JOIN viajes v ON v.id = ld.viaje_id
+    
+    // Obtener datos base de la liquidación
+    const liquidacion = await db.query(
+      `SELECT l.id, l.estibador_personal_id, p.nombre AS estibador_nombre
+       FROM liquidaciones l
        JOIN personal p ON p.id = l.estibador_personal_id
-       WHERE ld.liquidacion_id = $1
-       ORDER BY v.fecha ASC, ld.id ASC`,
+       WHERE l.id = $1`,
       [id]
     );
+    
+    if (liquidacion.rowCount === 0) {
+      return res.status(404).json({ error: 'liquidacion no encontrada' });
+    }
+    
+    const estibadorPersonalId = liquidacion.rows[0].estibador_personal_id;
+    const estibadorNombre = liquidacion.rows[0].estibador_nombre;
+    
+    // Unir detalles de viajes y ajustes
+    const result = await db.query(
+      `SELECT 
+         ld.id,
+         'viaje' AS detalle_tipo,
+         ld.liquidacion_id,
+         ld.viaje_id,
+         v.viaje_id AS referencia,
+         v.fecha,
+         NULL AS detalle,
+         $2 AS estibador_nombre,
+         ld.monto,
+         ld.created_at,
+         CASE WHEN EXISTS (
+           SELECT 1
+           FROM biometrico_marcas bm
+           WHERE bm.personal_id = $3
+             AND bm.fecha = v.fecha
+             AND bm.aplica_pago = TRUE
+         ) THEN TRUE ELSE FALSE END AS justificado_txt,
+         (
+           SELECT JSON_AGG(JSON_BUILD_OBJECT('id', r.id, 'nombre', r.nombre, 'tipo', r.tipo))
+           FROM viajes_rutas vr
+           JOIN rutas r ON r.id = vr.ruta_id
+           WHERE vr.viaje_id = v.id
+         ) AS rutas_asociadas
+       FROM liquidacion_detalle ld
+       JOIN viajes v ON v.id = ld.viaje_id
+       WHERE ld.liquidacion_id = $1
+       
+       UNION ALL
+       
+       SELECT 
+         lad.id,
+         'ajuste' AS detalle_tipo,
+         lad.liquidacion_id,
+         NULL AS viaje_id,
+         CONCAT(
+           CASE WHEN lad.tipo = 'sobrante' THEN '+ Sobrante' ELSE '- Faltante' END
+         ) AS referencia,
+         ap.fecha_inicio AS fecha,
+         lad.detalle,
+         $2 AS estibador_nombre,
+         CASE WHEN lad.tipo = 'sobrante' THEN lad.monto ELSE -lad.monto END AS monto,
+         lad.created_at,
+         CASE WHEN EXISTS (
+           SELECT 1
+           FROM biometrico_marcas bm
+           WHERE bm.personal_id = $3
+             AND bm.fecha = ap.fecha_inicio
+             AND bm.aplica_pago = TRUE
+         ) THEN TRUE ELSE FALSE END AS justificado_txt,
+         NULL AS rutas_asociadas
+       FROM liquidacion_ajustes_detalle lad
+       JOIN ajustes_personal ap ON ap.id = lad.ajuste_id
+       WHERE lad.liquidacion_id = $1
+       
+       ORDER BY created_at ASC, id ASC`,
+      [id, estibadorNombre, estibadorPersonalId]
+    );
+    
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -2149,7 +2580,7 @@ app.get('/api/ajustes-personal', authMiddleware, requireModulePermission('ajuste
     const r = await db.query(
       `SELECT ap.id, ap.personal_id, ap.tipo, ap.detalle, ap.valor_total,
               ap.en_cuotas, ap.cantidad_cuotas, ap.cuota_actual, ap.frecuencia,
-              ap.fecha_inicio, ap.estado, ap.created_at,
+              ap.fecha_inicio, ap.estado, ap.created_at, ap.viaje_id,
               p.documento, p.nombre, p.apellidos
        FROM ajustes_personal ap
        JOIN personal p ON p.id = ap.personal_id
@@ -2661,13 +3092,21 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
       }
       
       // Aplicar ajustes mensuales activos
+      // Excluir ajustes de cuota única que ya fueron aplicados en un rol anterior
       const ajustes = await db.query(
         `SELECT id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, cuota_actual
          FROM ajustes_personal
          WHERE personal_id = $1 
            AND estado = 'activo'
            AND frecuencia = 'mensual'
-           AND fecha_inicio <= $2`,
+           AND fecha_inicio <= $2
+           AND (
+             en_cuotas = TRUE
+             OR NOT EXISTS (
+               SELECT 1 FROM ajustes_aplicaciones aa
+               WHERE aa.ajuste_id = ajustes_personal.id
+             )
+           )`,
         [p.id, periodo_fin]
       );
       
@@ -2695,6 +3134,13 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
           [rolId, ajuste.id, aplicacion.rows[0].id, ajuste.tipo, ajuste.detalle, montoAplicar]
         );
         
+        // Aplicar ajuste a los totales: sobrantes suman a ingresos, faltantes suman a egresos
+        if (ajuste.tipo === 'sobrante') {
+          total_ingresos += montoAplicar;
+        } else if (ajuste.tipo === 'faltante') {
+          total_egresos += montoAplicar;
+        }
+        
         // Actualizar cuota actual del ajuste
         const nuevaCuotaActual = ajuste.cuota_actual + 1;
         await db.query(
@@ -2702,14 +3148,25 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
           [nuevaCuotaActual, ajuste.id]
         );
         
-        // Si es la última cuota, marcar como finalizado
-        if (ajuste.en_cuotas && nuevaCuotaActual >= ajuste.cantidad_cuotas) {
+        // Si no es en cuotas (aplicación única) o es la última cuota, marcar como finalizado
+        if (!ajuste.en_cuotas || (ajuste.en_cuotas && nuevaCuotaActual >= ajuste.cantidad_cuotas)) {
           await db.query(
             'UPDATE ajustes_personal SET estado = $1 WHERE id = $2',
             ['finalizado', ajuste.id]
           );
         }
       }
+      
+      // Recalcular neto_pagar después de aplicar ajustes
+      const neto_pagar_final = total_ingresos - total_egresos;
+      
+      // Actualizar totales del rol mensual
+      await db.query(
+        `UPDATE roles_mensuales
+         SET total_ingresos = $1, total_egresos = $2, neto_pagar = $3
+         WHERE id = $4`,
+        [total_ingresos, total_egresos, neto_pagar_final, rolId]
+      );
       
       rolesGenerados.push(rolResult.rows[0]);
     }
@@ -2737,6 +3194,39 @@ app.delete('/api/roles-mensuales', authMiddleware, requireModulePermission('role
     if (!periodo_mes) {
       return res.status(400).json({ error: 'periodo_mes es requerido' });
     }
+    
+    // Obtener ajustes que se van a eliminar para revertir cuota_actual
+    const ajustesAEliminar = await db.query(
+      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+       FROM ajustes_aplicaciones aa
+       JOIN rol_ajustes_detalle rad ON rad.aplicacion_id = aa.id
+       JOIN roles_mensuales rm ON rm.id = rad.rol_mensual_id
+       WHERE rm.periodo_mes = $1`,
+      [periodo_mes]
+    );
+
+    // Revertir cuota_actual de los ajustes antes de borrar
+    for (const ajuste of ajustesAEliminar.rows) {
+      await db.query(
+        `UPDATE ajustes_personal
+         SET cuota_actual = cuota_actual - 1,
+             estado = CASE 
+               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+               ELSE estado
+             END
+         WHERE id = $1`,
+        [ajuste.ajuste_id]
+      );
+    }
+
+    // Borrar ajustes_aplicaciones de roles mensuales del periodo
+    await db.query(
+      `DELETE FROM ajustes_aplicaciones
+       WHERE referencia_tipo = 'rol_mensual'
+         AND referencia_inicio >= $1::date
+         AND referencia_fin < ($1::date + INTERVAL '1 month')`,
+      [periodo_mes + '-01']
+    );
     
     const result = await db.query(
       'DELETE FROM roles_mensuales WHERE periodo_mes = $1 RETURNING id',
@@ -2793,6 +3283,40 @@ app.delete('/api/roles-mensuales/:id', authMiddleware, requireModulePermission('
     if (exists.rowCount === 0) {
       return res.status(404).json({ error: 'rol mensual no encontrado' });
     }
+
+    // Obtener ajustes que se van a eliminar para revertir cuota_actual
+    const ajustesAEliminar = await db.query(
+      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+       FROM ajustes_aplicaciones aa
+       JOIN rol_ajustes_detalle rad ON rad.aplicacion_id = aa.id
+       WHERE rad.rol_mensual_id = $1`,
+      [id]
+    );
+
+    // Revertir cuota_actual de los ajustes antes de borrar
+    for (const ajuste of ajustesAEliminar.rows) {
+      await db.query(
+        `UPDATE ajustes_personal
+         SET cuota_actual = cuota_actual - 1,
+             estado = CASE 
+               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+               ELSE estado
+             END
+         WHERE id = $1`,
+        [ajuste.ajuste_id]
+      );
+    }
+
+    // Borrar ajustes_aplicaciones asociadas
+    await db.query(
+      `DELETE FROM ajustes_aplicaciones
+       WHERE id IN (
+         SELECT aplicacion_id
+         FROM rol_ajustes_detalle
+         WHERE rol_mensual_id = $1
+       )`,
+      [id]
+    );
     
     await db.query('DELETE FROM roles_mensuales WHERE id = $1', [id]);
     
@@ -3016,6 +3540,230 @@ app.get('/api/reportes/pagos-estibador', authMiddleware, requireModulePermission
        GROUP BY l.estibador_personal_id, p.nombre
        ORDER BY total_pagado DESC, p.nombre ASC`,
       [desde, hasta]
+    );
+
+    res.json({ desde, hasta, rows: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/reportes/rutas-choferes', authMiddleware, requireModulePermission('reportes', 'can_access'), async (req, res) => {
+  try {
+    const { desde, hasta, chofer_id, ruta_id } = req.query;
+    const validationError = validateDateRange(desde, hasta);
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const conditions = ['v.fecha BETWEEN $1 AND $2'];
+    const params = [desde, hasta];
+
+    if (hasValue(chofer_id)) {
+      params.push(Number(chofer_id));
+      conditions.push(`v.conductor_id = $${params.length}`);
+    }
+
+    if (hasValue(ruta_id)) {
+      params.push(Number(ruta_id));
+      conditions.push(`r.id = $${params.length}`);
+    }
+
+    const result = await db.query(
+      `WITH rutas_viaje AS (
+         SELECT vr.viaje_id, vr.ruta_id
+         FROM viajes_rutas vr
+         UNION
+         SELECT v.id AS viaje_id, v.ruta_id
+         FROM viajes v
+         WHERE NOT EXISTS (
+           SELECT 1 FROM viajes_rutas vr2 WHERE vr2.viaje_id = v.id AND vr2.ruta_id = v.ruta_id
+         )
+       )
+       SELECT v.id AS viaje_db_id,
+              v.viaje_id,
+              v.fecha,
+              p.id AS chofer_id,
+              p.nombre AS chofer_nombre,
+              c.placa,
+              r.id AS ruta_id,
+              r.nombre AS ruta_nombre,
+              r.tipo AS ruta_tipo,
+              COALESCE(r.valor_a_pagar, 0)::numeric(12,2) AS valor_a_pagar
+       FROM viajes v
+       JOIN personal p ON p.id = v.conductor_id
+       JOIN camiones c ON c.id = v.camion_id
+       JOIN rutas_viaje rv ON rv.viaje_id = v.id
+       JOIN rutas r ON r.id = rv.ruta_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY v.fecha DESC, p.nombre ASC, v.id DESC, r.nombre ASC`,
+      params
+    );
+
+    res.json({ desde, hasta, rows: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/reportes/gastos-viaje', authMiddleware, requireModulePermission('reportes', 'can_access'), async (req, res) => {
+  try {
+    const { desde, hasta, camion_id, chofer_id, ruta_id } = req.query;
+    const validationError = validateDateRange(desde, hasta);
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const conditions = ['v.fecha BETWEEN $1 AND $2'];
+    const params = [desde, hasta];
+
+    if (hasValue(camion_id)) {
+      params.push(Number(camion_id));
+      conditions.push(`v.camion_id = $${params.length}`);
+    }
+
+    if (hasValue(chofer_id)) {
+      params.push(Number(chofer_id));
+      conditions.push(`v.conductor_id = $${params.length}`);
+    }
+
+    if (hasValue(ruta_id)) {
+      params.push(Number(ruta_id));
+      conditions.push(`EXISTS (SELECT 1 FROM rutas_viaje rvf WHERE rvf.viaje_id = v.id AND rvf.ruta_id = $${params.length})`);
+    }
+
+    const result = await db.query(
+      `WITH rutas_viaje AS (
+         SELECT vr.viaje_id, vr.ruta_id
+         FROM viajes_rutas vr
+         UNION
+         SELECT v.id AS viaje_id, v.ruta_id
+         FROM viajes v
+         WHERE NOT EXISTS (
+           SELECT 1 FROM viajes_rutas vr2 WHERE vr2.viaje_id = v.id AND vr2.ruta_id = v.ruta_id
+         )
+       ),
+       rutas_agregadas AS (
+         SELECT rv.viaje_id,
+                STRING_AGG(DISTINCT r.nombre, ', ' ORDER BY r.nombre) AS rutas_nombres
+         FROM rutas_viaje rv
+         JOIN rutas r ON r.id = rv.ruta_id
+         GROUP BY rv.viaje_id
+       ),
+       gastos_por_viaje AS (
+         SELECT vg.viaje_ref_id,
+                COALESCE(SUM(vg.valor), 0)::numeric(12,2) AS total_gastos
+         FROM viaje_gastos vg
+         GROUP BY vg.viaje_ref_id
+       )
+       SELECT v.id AS viaje_db_id,
+              v.viaje_id,
+              v.fecha,
+              p.id AS chofer_id,
+              p.nombre AS chofer_nombre,
+              c.id AS camion_id,
+        c.nombre AS camion_nombre,
+              c.placa,
+              COALESCE(ra.rutas_nombres, rt.nombre) AS ruta_nombre,
+              COALESCE(gv.total_gastos, 0)::numeric(12,2) AS total_gastos
+       FROM viajes v
+       JOIN personal p ON p.id = v.conductor_id
+       JOIN camiones c ON c.id = v.camion_id
+       JOIN rutas rt ON rt.id = v.ruta_id
+       LEFT JOIN rutas_agregadas ra ON ra.viaje_id = v.id
+       LEFT JOIN gastos_por_viaje gv ON gv.viaje_ref_id = v.id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY v.fecha DESC, v.id DESC`,
+      params
+    );
+
+    res.json({ desde, hasta, rows: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/reportes/gastos-viaje/:viajeId/detalle', authMiddleware, requireModulePermission('reportes', 'can_access'), async (req, res) => {
+  try {
+    const viajeId = Number(req.params.viajeId);
+    if (!Number.isFinite(viajeId) || viajeId <= 0) {
+      return res.status(400).json({ error: 'viajeId invalido' });
+    }
+
+    const viaje = await db.query('SELECT id FROM viajes WHERE id = $1', [viajeId]);
+    if (viaje.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const detalle = await db.query(
+      `SELECT id, viaje_ref_id, tipo_gasto, valor, observacion, numero_comprobante, created_at
+       FROM viaje_gastos
+       WHERE viaje_ref_id = $1
+       ORDER BY id DESC`,
+      [viajeId]
+    );
+
+    res.json({ viaje_id: viajeId, rows: detalle.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/reportes/viajes-facturar', authMiddleware, requireModulePermission('reportes', 'can_access'), async (req, res) => {
+  try {
+    const { desde, hasta, chofer_id, camion_id, ruta_id, tipo_ruta } = req.query;
+    const validationError = validateDateRange(desde, hasta);
+    if (validationError) return res.status(400).json({ error: validationError });
+
+    const conditions = ['v.fecha BETWEEN $1 AND $2'];
+    const params = [desde, hasta];
+
+    if (hasValue(chofer_id)) {
+      params.push(Number(chofer_id));
+      conditions.push(`v.conductor_id = $${params.length}`);
+    }
+    if (hasValue(camion_id)) {
+      params.push(Number(camion_id));
+      conditions.push(`v.camion_id = $${params.length}`);
+    }
+    if (hasValue(ruta_id)) {
+      params.push(Number(ruta_id));
+      conditions.push(`r.id = $${params.length}`);
+    }
+    if (hasValue(tipo_ruta)) {
+      params.push(tipo_ruta);
+      conditions.push(`r.tipo = $${params.length}`);
+    }
+
+    const result = await db.query(
+      `WITH rutas_viaje AS (
+         SELECT vr.viaje_id, vr.ruta_id
+         FROM viajes_rutas vr
+         UNION
+         SELECT v.id AS viaje_id, v.ruta_id
+         FROM viajes v
+         WHERE NOT EXISTS (
+           SELECT 1 FROM viajes_rutas vr2 WHERE vr2.viaje_id = v.id AND vr2.ruta_id = v.ruta_id
+         )
+       )
+       SELECT v.id AS viaje_db_id,
+              v.viaje_id,
+              v.fecha,
+              p.id AS chofer_id,
+              p.nombre AS chofer_nombre,
+              c.id AS camion_id,
+              c.nombre AS camion_nombre,
+              c.placa,
+              r.id AS ruta_id,
+              r.nombre AS ruta_nombre,
+              r.tipo AS ruta_tipo,
+              COALESCE(r.valor_a_cobrar, 0)::numeric(12,2) AS valor_a_cobrar
+       FROM viajes v
+       JOIN personal p ON p.id = v.conductor_id
+       JOIN camiones c ON c.id = v.camion_id
+       JOIN rutas_viaje rv ON rv.viaje_id = v.id
+       JOIN rutas r ON r.id = rv.ruta_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY v.fecha DESC, v.id DESC, r.nombre ASC`,
+      params
     );
 
     res.json({ desde, hasta, rows: result.rows });
@@ -3269,18 +4017,58 @@ app.get('/api/viajes/next-id', authMiddleware, requireModulePermission('bitacora
 // Fase 2: Bitacora de viajes
 app.get('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can_access'), async (req, res) => {
   try {
+    const { fecha, ruta_id, camion_id, conductor_id } = req.query;
+    
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+    
+    if (fecha) {
+      whereConditions.push(`DATE(v.fecha) = $${paramIndex}`);
+      params.push(fecha);
+      paramIndex++;
+    }
+    
+    if (ruta_id) {
+      whereConditions.push(`(v.ruta_id = $${paramIndex} OR EXISTS (SELECT 1 FROM viajes_rutas vr WHERE vr.viaje_id = v.id AND vr.ruta_id = $${paramIndex}))`);
+      params.push(Number(ruta_id));
+      paramIndex++;
+    }
+    
+    if (camion_id) {
+      whereConditions.push(`v.camion_id = $${paramIndex}`);
+      params.push(Number(camion_id));
+      paramIndex++;
+    }
+    
+    if (conductor_id) {
+      whereConditions.push(`v.conductor_id = $${paramIndex}`);
+      params.push(Number(conductor_id));
+      paramIndex++;
+    }
+    
+    const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
+    
     const r = await db.query(
       `SELECT v.id, v.viaje_id, v.fecha, v.fecha AS fecha_desde, v.fecha_hasta, v.camion_id, c.placa, c.nombre AS camion_nombre,
               v.conductor_id, p.nombre AS conductor_nombre,
               v.ruta_id, rt.nombre AS ruta_nombre, rt.tipo AS ruta_tipo,
               v.estado_viaje_id, ev.nombre AS estado_nombre,
-              v.tipo_operacion, v.km_inicial, v.km_final, v.observacion, v.created_at, v.updated_at
+              v.tipo_operacion, v.km_inicial, v.km_final, v.observacion, v.created_at, v.updated_at,
+              (
+                SELECT JSON_AGG(JSON_BUILD_OBJECT('id', r2.id, 'nombre', r2.nombre, 'tipo', r2.tipo))
+                FROM viajes_rutas vr
+                JOIN rutas r2 ON r2.id = vr.ruta_id
+                WHERE vr.viaje_id = v.id
+              ) AS rutas_asociadas
        FROM viajes v
        JOIN camiones c ON c.id = v.camion_id
        JOIN personal p ON p.id = v.conductor_id
        JOIN rutas rt ON rt.id = v.ruta_id
        JOIN estados_viaje ev ON ev.id = v.estado_viaje_id
-       ORDER BY v.id DESC`
+       ${whereClause}
+       ORDER BY v.fecha DESC, v.id DESC`,
+      params
     );
     res.json(r.rows);
   } catch (err) {
@@ -3336,72 +4124,66 @@ app.post('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can
 
     await client.query('BEGIN');
 
-    const createdRows = [];
-    for (let index = 0; index < rutasSeleccionadas.length; index += 1) {
-      const rutaActual = rutasSeleccionadas[index];
-      const viajeCode = rutasSeleccionadas.length > 1
-        ? `${String(viaje_id)}-R${rutaActual}`
-        : String(viaje_id);
+    // Validar datos del viaje
+    const validationError = await validateViajeCoreData({
+      viaje_id: String(viaje_id),
+      fecha: fechaDesde,
+      fecha_desde: fechaDesde,
+      fecha_hasta: fechaHasta,
+      camion_id,
+      conductor_id,
+      ruta_id: rutasSeleccionadas[0],
+      estado_viaje_id,
+      tipo_operacion,
+      km_inicial,
+      km_final,
+      observacion
+    });
+    if (validationError) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: validationError });
+    }
 
-      const validationError = await validateViajeCoreData({
-        viaje_id: viajeCode,
-        fecha: fechaDesde,
-        fecha_desde: fechaDesde,
-        fecha_hasta: fechaHasta,
-        camion_id,
-        conductor_id,
-        ruta_id: rutaActual,
-        estado_viaje_id,
-        tipo_operacion,
-        km_inicial,
-        km_final,
-        observacion
-      });
-      if (validationError) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: validationError });
-      }
+    // Crear un solo viaje
+    const created = await client.query(
+      `INSERT INTO viajes(viaje_id, fecha, fecha_hasta, camion_id, conductor_id, ruta_id, estado_viaje_id, tipo_operacion, km_inicial, km_final, observacion)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [
+        String(viaje_id),
+        fechaDesde,
+        fechaHasta,
+        Number(camion_id),
+        Number(conductor_id),
+        Number(rutasSeleccionadas[0]),
+        Number(estado_viaje_id),
+        tipo_operacion || 'carga',
+        Number(km_inicial || 0),
+        Number(km_final || 0),
+        observacion || null
+      ]
+    );
 
-      const created = await client.query(
-        `INSERT INTO viajes(viaje_id, fecha, fecha_hasta, camion_id, conductor_id, ruta_id, estado_viaje_id, tipo_operacion, km_inicial, km_final, observacion)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-         RETURNING *`,
-        [
-          viajeCode,
-          fechaDesde,
-          fechaHasta,
-          Number(camion_id),
-          Number(conductor_id),
-          Number(rutaActual),
-          Number(estado_viaje_id),
-          tipo_operacion || 'carga',
-          Number(km_inicial || 0),
-          Number(km_final || 0),
-          observacion || null
-        ]
+    const viajeCreado = created.rows[0];
+
+    // Insertar todas las rutas asociadas en viajes_rutas
+    for (const rutaId of rutasSeleccionadas) {
+      await client.query(
+        `INSERT INTO viajes_rutas (viaje_id, ruta_id) VALUES ($1, $2) ON CONFLICT (viaje_id, ruta_id) DO NOTHING`,
+        [viajeCreado.id, rutaId]
       );
-
-      createdRows.push(created.rows[0]);
     }
 
     await client.query('COMMIT');
 
-    for (const row of createdRows) {
-      await auditLog(req.user.id, 'viajes', row.id, 'create', {
-        viaje_id: row.viaje_id,
-        fecha_desde: row.fecha,
-        fecha_hasta: row.fecha_hasta
-      });
-    }
-
-    if (createdRows.length === 1) {
-      return res.status(201).json(createdRows[0]);
-    }
-
-    return res.status(201).json({
-      created_count: createdRows.length,
-      rows: createdRows
+    await auditLog(req.user.id, 'viajes', viajeCreado.id, 'create', {
+      viaje_id: viajeCreado.viaje_id,
+      fecha_desde: viajeCreado.fecha,
+      fecha_hasta: viajeCreado.fecha_hasta,
+      rutas: rutasSeleccionadas
     });
+
+    return res.status(201).json(viajeCreado);
   } catch (err) {
     try {
       await client.query('ROLLBACK');
@@ -3456,6 +4238,12 @@ app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', '
       });
     }
 
+    const rutaIds = Array.isArray(req.body.ruta_ids)
+      ? [...new Set(req.body.ruta_ids.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))]
+      : [];
+
+    const rutasSeleccionadas = rutaIds.length > 0 ? rutaIds : [Number(ruta_id)];
+
     const updated = await db.query(
       `UPDATE viajes
        SET viaje_id=$1, fecha=$2, fecha_hasta=$3, camion_id=$4, conductor_id=$5, ruta_id=$6, estado_viaje_id=$7,
@@ -3468,7 +4256,7 @@ app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', '
         fechaHasta,
         Number(camion_id),
         Number(conductor_id),
-        Number(ruta_id),
+        Number(rutasSeleccionadas[0]),
         Number(estado_viaje_id),
         tipo_operacion || 'carga',
         Number(km_inicial || 0),
@@ -3478,10 +4266,20 @@ app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', '
       ]
     );
 
+    // Actualizar las rutas asociadas en viajes_rutas
+    await db.query('DELETE FROM viajes_rutas WHERE viaje_id = $1', [id]);
+    for (const rutaId of rutasSeleccionadas) {
+      await db.query(
+        'INSERT INTO viajes_rutas (viaje_id, ruta_id) VALUES ($1, $2) ON CONFLICT (viaje_id, ruta_id) DO NOTHING',
+        [id, rutaId]
+      );
+    }
+
     await auditLog(req.user.id, 'viajes', id, 'update', {
       viaje_id: updated.rows[0].viaje_id,
       fecha_desde: updated.rows[0].fecha,
-      fecha_hasta: updated.rows[0].fecha_hasta
+      fecha_hasta: updated.rows[0].fecha_hasta,
+      rutas: rutasSeleccionadas
     });
 
     res.json(updated.rows[0]);
@@ -3861,14 +4659,31 @@ app.post('/api/viajes/:id/carga', authMiddleware, requireModulePermission('bitac
         productoId = await getOrCreateRutaCortaProductoId();
       }
     } else {
-      if (!hasValue(producto_id)) return res.status(400).json({ error: 'producto_id es obligatorio' });
-      if (!hasValue(cantidad)) return res.status(400).json({ error: 'cantidad es obligatoria' });
+      // Ruta larga: permitir AMBOS tipos de carga
+      // - Con producto_id + cantidad (carga de ruta larga estándar)
+      // - Sin producto_id pero con valor_carga (carga de ruta corta dentro de ruta larga)
+      
+      if (!Number.isFinite(Number(valor_carga))) {
+        return res.status(400).json({ error: 'valor_carga invalido' });
+      }
 
-      const producto = await db.query('SELECT id FROM productos WHERE id=$1 AND activo=TRUE', [Number(producto_id)]);
-      if (producto.rowCount === 0) return res.status(400).json({ error: 'producto invalido' });
+      // Si tiene producto_id, es carga de ruta larga
+      if (hasValue(producto_id)) {
+        if (!hasValue(cantidad)) return res.status(400).json({ error: 'cantidad es obligatoria para carga de ruta larga' });
+        if (!Number.isFinite(Number(cantidad)) || Number(cantidad) <= 0) {
+          return res.status(400).json({ error: 'cantidad debe ser mayor a 0' });
+        }
+        const producto = await db.query('SELECT id FROM productos WHERE id=$1 AND activo=TRUE', [Number(producto_id)]);
+        if (producto.rowCount === 0) return res.status(400).json({ error: 'producto invalido' });
 
-      productoId = Number(producto_id);
-      cantidadValue = Number(cantidad);
+        productoId = Number(producto_id);
+        cantidadValue = Number(cantidad);
+      } else {
+        // Si NO tiene producto_id es carga de ruta corta (solo valor)
+        // Usar producto default de ruta corta y cantidad 1
+        cantidadValue = 1;
+        productoId = await getOrCreateRutaCortaProductoId();
+      }
     }
 
     const created = await db.query(
@@ -3935,14 +4750,31 @@ app.put('/api/viajes/:id/carga/:cargaId', authMiddleware, requireModulePermissio
         productoId = await getOrCreateRutaCortaProductoId();
       }
     } else {
-      if (!hasValue(producto_id)) return res.status(400).json({ error: 'producto_id es obligatorio' });
-      if (!hasValue(cantidad)) return res.status(400).json({ error: 'cantidad es obligatoria' });
+      // Ruta larga: permitir AMBOS tipos de carga
+      // - Con producto_id + cantidad (carga de ruta larga estándar)
+      // - Sin producto_id pero con valor_carga (carga de ruta corta dentro de ruta larga)
+      
+      if (!Number.isFinite(Number(valor_carga))) {
+        return res.status(400).json({ error: 'valor_carga invalido' });
+      }
 
-      const producto = await db.query('SELECT id FROM productos WHERE id=$1 AND activo=TRUE', [Number(producto_id)]);
-      if (producto.rowCount === 0) return res.status(400).json({ error: 'producto invalido' });
+      // Si tiene producto_id, es carga de ruta larga
+      if (hasValue(producto_id)) {
+        if (!hasValue(cantidad)) return res.status(400).json({ error: 'cantidad es obligatoria para carga de ruta larga' });
+        if (!Number.isFinite(Number(cantidad)) || Number(cantidad) <= 0) {
+          return res.status(400).json({ error: 'cantidad debe ser mayor a 0' });
+        }
+        const producto = await db.query('SELECT id FROM productos WHERE id=$1 AND activo=TRUE', [Number(producto_id)]);
+        if (producto.rowCount === 0) return res.status(400).json({ error: 'producto invalido' });
 
-      productoId = Number(producto_id);
-      cantidadValue = Number(cantidad);
+        productoId = Number(producto_id);
+        cantidadValue = Number(cantidad);
+      } else {
+        // Si NO tiene producto_id es carga de ruta corta (solo valor)
+        // Usar producto default de ruta corta y cantidad 1
+        cantidadValue = 1;
+        productoId = await getOrCreateRutaCortaProductoId();
+      }
     }
 
     const updated = await db.query(
@@ -3991,6 +4823,76 @@ app.delete('/api/viajes/:id/carga/:cargaId', authMiddleware, requireModulePermis
 
     await auditLog(req.user.id, 'viaje_carga', cargaId, 'delete', { viaje_id: id });
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.post('/api/viajes/:id/viaticos-ajuste', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  try {
+    const viajeId = Number(req.params.id);
+    
+    // Verificar que el viaje existe
+    const viajeResult = await db.query(
+      `SELECT v.id, v.viaje_id, v.conductor_id, v.ruta_id
+       FROM viajes v
+       WHERE v.id=$1`,
+      [viajeId]
+    );
+    if (viajeResult.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+    
+    const viaje = viajeResult.rows[0];
+    if (!viaje.conductor_id) return res.status(400).json({ error: 'el viaje no tiene conductor asignado' });
+    
+    const { banco_id, valor_transferencia, comprobante, tipo_ajuste, diferencia } = req.body;
+    
+    if (!hasValue(banco_id)) return res.status(400).json({ error: 'banco_id es obligatorio' });
+    if (!hasValue(valor_transferencia)) return res.status(400).json({ error: 'valor_transferencia es obligatorio' });
+    if (!hasValue(tipo_ajuste)) return res.status(400).json({ error: 'tipo_ajuste es obligatorio' });
+    
+    const tipoNormalizado = String(tipo_ajuste).toLowerCase();
+    if (!['faltante', 'sobrante'].includes(tipoNormalizado)) {
+      return res.status(400).json({ error: 'tipo_ajuste debe ser "faltante" o "sobrante"' });
+    }
+    
+    // Crear el ajuste en la tabla ajustes_personal
+    const detalle = `${tipoNormalizado === 'faltante' ? 'Faltante' : 'Sobrante'} por ruta larga - Viaje #${viaje.viaje_id}`;
+    
+    const ajusteResult = await db.query(
+      `INSERT INTO ajustes_personal (
+        personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, 
+        frecuencia, fecha_inicio, estado, viaje_id, banco_id, comprobante_viatico
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING *`,
+      [
+        viaje.conductor_id,
+        tipoNormalizado,
+        detalle,
+        Number(diferencia || 0),
+        false,
+        1,
+        'mensual',
+        new Date().toISOString().slice(0, 10),
+        'activo',
+        viajeId,
+        Number(banco_id),
+        comprobante || null
+      ]
+    );
+    
+    if (ajusteResult.rowCount === 0) {
+      return res.status(500).json({ error: 'no se pudo crear el ajuste' });
+    }
+    
+    await auditLog(req.user.id, 'ajustes_personal', ajusteResult.rows[0].id, 'create', {
+      tipo: tipoNormalizado,
+      viaje_id: viajeId,
+      conductor_id: viaje.conductor_id,
+      diferencia: Number(diferencia || 0)
+    });
+    
+    res.status(201).json(ajusteResult.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'server error' });

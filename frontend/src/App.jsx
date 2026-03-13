@@ -10,7 +10,7 @@ import {
   getPresetDateRange,
   hasValue
 } from './utils/appUtils'
-import { EyeIcon, LogoutIcon, PencilIcon, RefreshIcon, SaveIcon, TrashIcon } from './components/icons'
+import { ChevronLeftIcon, ChevronRightIcon, EyeIcon, LogoutIcon, PauseIcon, PencilIcon, PlayIcon, RefreshIcon, SaveIcon, TrashIcon } from './components/icons'
 
 const API = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:4000/api`
 const DASHBOARD_PRESETS = ['hoy', 'semana', 'mes', '3 meses', '6 meses', 'ano']
@@ -20,7 +20,12 @@ export default function App() {
   const catalogViewKeys = useMemo(() => CATALOG_MENU_ITEMS.map((item) => item.key), [])
 
   const [token, setToken] = useState(localStorage.getItem('token'))
-  const [currentView, setCurrentView] = useState('dashboard')
+  const [pagination, setPagination] = useState({})
+
+  const [currentView, setCurrentView] = useState(() => {
+    const hash = window.location.hash.replace(/^#\/?/, '')
+    return hash || 'dashboard'
+  })
   const [email, setEmail] = useState('admin@example.com')
   const [password, setPassword] = useState('root')
   const [error, setError] = useState('')
@@ -52,6 +57,8 @@ export default function App() {
   const [editingCargaId, setEditingCargaId] = useState(null)
   const [gastoForm, setGastoForm] = useState({ tipo_gasto: '', valor: '', observacion: '', numero_comprobante: '' })
   const [cargaForm, setCargaForm] = useState({ producto_id: '', cantidad: '', valor_carga: '' })
+  const [viaticosRutaLargaForm, setViaticosRutaLargaForm] = useState({ banco_id: '', valor: '', comprobante: '' })
+  const [viaticosRutaLargaLista, setViaticosRutaLargaLista] = useState([])
   const [bitacoraMessage, setBitacoraMessage] = useState('')
 
   const [biometricoFile, setBiometricoFile] = useState(null)
@@ -68,6 +75,10 @@ export default function App() {
   const [asignacionMessage, setAsignacionMessage] = useState('')
 
   const [liquidacionSemana, setLiquidacionSemana] = useState('1')
+  const [liquidacionMesAno, setLiquidacionMesAno] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  })
   const [liquidaciones, setLiquidaciones] = useState([])
   const [selectedLiquidacionId, setSelectedLiquidacionId] = useState('')
   const [liquidacionDetalle, setLiquidacionDetalle] = useState([])
@@ -93,6 +104,15 @@ export default function App() {
     comprobante: '',
     monto: ''
   })
+
+  // Filtros y paginación de bitácora de viajes
+  const [bitacoraFiltros, setBitacoraFiltros] = useState({
+    fecha: '',
+    ruta_id: '',
+    camion_id: '',
+    conductor_id: ''
+  })
+  const [bitacoraPaginaActual, setBitacoraPaginaActual] = useState(0)
 
   const [ajustesRows, setAjustesRows] = useState([])
   const [ajusteForm, setAjusteForm] = useState({
@@ -121,9 +141,19 @@ export default function App() {
 
   const [reporteDesde, setReporteDesde] = useState(weekRangeDefault.start)
   const [reporteHasta, setReporteHasta] = useState(weekRangeDefault.end)
+  const [reporteSubmenu, setReporteSubmenu] = useState('basicos')
+  const [reporteCamionId, setReporteCamionId] = useState('')
+  const [reporteChoferId, setReporteChoferId] = useState('')
+  const [reporteRutaId, setReporteRutaId] = useState('')
+  const [reporteTipoRuta, setReporteTipoRuta] = useState('')
+  const [reporteViajesFacturar, setReporteViajesFacturar] = useState([])
   const [reportePagos, setReportePagos] = useState([])
   const [reporteCostosRuta, setReporteCostosRuta] = useState([])
   const [reporteCostosCamion, setReporteCostosCamion] = useState([])
+  const [reporteRutasChoferes, setReporteRutasChoferes] = useState([])
+  const [reporteGastosViaje, setReporteGastosViaje] = useState([])
+  const [reporteGastosViajeDetalle, setReporteGastosViajeDetalle] = useState([])
+  const [reporteGastosViajeSeleccionado, setReporteGastosViajeSeleccionado] = useState(null)
   const [reporteEstibadoresSinAsignacion, setReporteEstibadoresSinAsignacion] = useState([])
   const [reporteViajesSinEstibadores, setReporteViajesSinEstibadores] = useState([])
   const [reporteMessage, setReporteMessage] = useState('')
@@ -163,14 +193,69 @@ export default function App() {
     return { Authorization: `Bearer ${token}` }
   }
 
+  function navigateTo(view) {
+    setCurrentView(view)
+    window.location.hash = `/${view}`
+  }
+
+  // Sincronizar vista con el hash del navegador (botones atrás/adelante)
+  useEffect(() => {
+    function handleHashChange() {
+      const view = window.location.hash.replace(/^#\/?/, '') || 'dashboard'
+      setCurrentView(view)
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
   function handleUnauthorizedSession() {
     logout()
     setError('Sesion expirada o invalida. Inicia Sesion nuevamente.')
   }
 
+  // Función para cargar viáticos desde localStorage
+  function loadViaticosFromStorage(viajeId) {
+    if (!viajeId) return []
+    try {
+      const key = `viaticos_${viajeId}`
+      const stored = localStorage.getItem(key)
+      if (stored) {
+        const parsed = JSON.parse(stored)
+        const result = Array.isArray(parsed) ? parsed : []
+        return result
+      }
+    } catch (err) {
+      console.error(`Error loading viaticos for viaje ${viajeId}:`, err)
+    }
+    return []
+  }
+
   useEffect(() => {
     if (token) refreshAll()
   }, [token])
+
+  // Restaurar selectedViajeId desde localStorage DESPUÉS de que los viajes se hayan cargado
+  useEffect(() => {
+    if (!token || viajes.length === 0) return
+    try {
+      const savedViajeId = localStorage.getItem('selectedViajeId')
+      if (savedViajeId) {
+        const viajeExiste = viajes.some((v) => String(v.id) === String(savedViajeId))
+        if (viajeExiste) {
+          setSelectedViajeId(String(savedViajeId))
+        } else if (viajes[0]) {
+          setSelectedViajeId(String(viajes[0].id))
+        }
+      } else if (viajes[0]) {
+        setSelectedViajeId(String(viajes[0].id))
+      }
+    } catch (err) {
+      console.error('Error restoring selectedViajeId from localStorage:', err)
+      if (viajes[0]) {
+        setSelectedViajeId(String(viajes[0].id))
+      }
+    }
+  }, [token, viajes.length])
 
   useEffect(() => {
     fetchEmpresaLogoPublic()
@@ -190,9 +275,27 @@ export default function App() {
       setGastos([])
       setCargas([])
       setViajePersonal([])
+      // NO limpiar viaticosRutaLargaLista aquí - se mantiene en localStorage
+      setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
       return
     }
+    
+    // Cargar viáticos desde localStorage
+    const viaticos = loadViaticosFromStorage(selectedViajeId)
+    setViaticosRutaLargaLista(viaticos)
+    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
     fetchViajeDetalles(selectedViajeId)
+  }, [selectedViajeId])
+
+  // Guardar selectedViajeId en localStorage cuando cambia
+  useEffect(() => {
+    if (selectedViajeId) {
+      try {
+        localStorage.setItem('selectedViajeId', selectedViajeId)
+      } catch (err) {
+        console.error('Error saving selectedViajeId to localStorage:', err)
+      }
+    }
   }, [selectedViajeId])
 
   useEffect(() => {
@@ -275,20 +378,20 @@ export default function App() {
     const isCatalogView = CATALOG_MENU_ITEMS.some((item) => item.key === currentView)
     if (isCatalogView) {
       if (!canAccessModule('base_datos')) {
-        setCurrentView('dashboard')
+        navigateTo('dashboard')
         return
       }
       if (currentView === 'empresa_logo' && !canAccessModule('empresa_logo')) {
-        setCurrentView('dashboard')
+        navigateTo('dashboard')
         return
       }
       if (currentView === 'admin_access' && !canAccessModule('admin_access')) {
-        setCurrentView('dashboard')
+        navigateTo('dashboard')
       }
       return
     }
     if (!canAccessModule(currentView)) {
-      setCurrentView('dashboard')
+      navigateTo('dashboard')
     }
   }, [myAccess, currentView, token])
 
@@ -430,12 +533,18 @@ export default function App() {
     }
   }
 
-  async function fetchViajes() {
+  async function fetchViajes(filters = {}) {
     try {
-      const r = await axios.get(`${API}/viajes`, { headers: authHeaders() })
+      const queryParams = new URLSearchParams();
+      if (filters.fecha) queryParams.append('fecha', filters.fecha);
+      if (filters.ruta_id) queryParams.append('ruta_id', filters.ruta_id);
+      if (filters.camion_id) queryParams.append('camion_id', filters.camion_id);
+      if (filters.conductor_id) queryParams.append('conductor_id', filters.conductor_id);
+      
+      const r = await axios.get(`${API}/viajes${queryParams.toString() ? '?' + queryParams.toString() : ''}`, { headers: authHeaders() })
       const data = r.data || []
       setViajes(data)
-      if (!selectedViajeId && data[0]) setSelectedViajeId(String(data[0].id))
+      // No cambiar selectedViajeId aquí - dejamos que el useEffect de restauración lo haga
     } catch (err) {
       if (err?.response?.status === 401) {
         handleUnauthorizedSession()
@@ -530,7 +639,9 @@ export default function App() {
 
   async function fetchLiquidaciones(semanaSeleccionada = liquidacionSemana) {
     try {
-      const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(semanaSeleccionada)
+      const [year, month] = liquidacionMesAno.split('-').map(Number)
+      const referenceDate = new Date(year, month - 1, 15)
+      const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(semanaSeleccionada, referenceDate)
       setLiquidacionMessage('')
       const query = `?semana_inicio=${encodeURIComponent(semanaInicio)}&semana_fin=${encodeURIComponent(semanaFin)}`
       const r = await axios.get(`${API}/liquidaciones${query}`, { headers: authHeaders() })
@@ -549,7 +660,9 @@ export default function App() {
       return
     }
     try {
-      const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana)
+      const [year, month] = liquidacionMesAno.split('-').map(Number)
+      const referenceDate = new Date(year, month - 1, 15)
+      const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana, referenceDate)
       setLiquidacionMessage('')
       const r = await axios.post(`${API}/liquidaciones/generar`, {
         semana_inicio: semanaInicio,
@@ -570,8 +683,10 @@ export default function App() {
       setLiquidacionMessage('No tienes permiso para eliminar en Liquidaciones')
       return
     }
-    const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana)
-    const confirmed = window.confirm(`?Seguro que deseas eliminar las liquidaciones de ${semanaInicio} a ${semanaFin}?`)
+    const [year, month] = liquidacionMesAno.split('-').map(Number)
+    const referenceDate = new Date(year, month - 1, 15)
+    const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana, referenceDate)
+    const confirmed = window.confirm(`¿Seguro que deseas eliminar las liquidaciones de ${semanaInicio} a ${semanaFin}?`)
     if (!confirmed) return
 
     try {
@@ -766,6 +881,12 @@ export default function App() {
     try {
       setAjustesMessage('')
       await axios.delete(`${API}/ajustes-personal/${item.id}`, { headers: authHeaders() })
+      
+      // Limpiar el flag de viáticos generados si este ajuste estaba asociado a un viaje
+      if (item.viaje_id) {
+        localStorage.removeItem(`viaticos_generado_${item.viaje_id}`)
+      }
+      
       await fetchAjustesPersonal()
       if (editingAjusteId === item.id) {
         setEditingAjusteId(null)
@@ -1175,26 +1296,178 @@ export default function App() {
     try {
       setReporteMessage('')
       const query = `desde=${encodeURIComponent(reporteDesde)}&hasta=${encodeURIComponent(reporteHasta)}`
+      const rutasChoferesParams = new URLSearchParams({ desde: reporteDesde, hasta: reporteHasta })
+      if (reporteChoferId) rutasChoferesParams.set('chofer_id', reporteChoferId)
+      if (reporteRutaId) rutasChoferesParams.set('ruta_id', reporteRutaId)
+      const gastosViajeParams = new URLSearchParams({ desde: reporteDesde, hasta: reporteHasta })
+      if (reporteCamionId) gastosViajeParams.set('camion_id', reporteCamionId)
+      if (reporteChoferId) gastosViajeParams.set('chofer_id', reporteChoferId)
+      if (reporteRutaId) gastosViajeParams.set('ruta_id', reporteRutaId)
 
-      const [pagosResult, costosResult, inconsistenciasResult] = await Promise.all([
+      const viajesFacturarParams = new URLSearchParams({ desde: reporteDesde, hasta: reporteHasta })
+      if (reporteCamionId) viajesFacturarParams.set('camion_id', reporteCamionId)
+      if (reporteChoferId) viajesFacturarParams.set('chofer_id', reporteChoferId)
+      if (reporteRutaId) viajesFacturarParams.set('ruta_id', reporteRutaId)
+      if (reporteTipoRuta) viajesFacturarParams.set('tipo_ruta', reporteTipoRuta)
+
+      const [pagosResult, costosResult, inconsistenciasResult, rutasChoferesResult, gastosViajeResult, viajesFacturarResult] = await Promise.all([
         axios.get(`${API}/reportes/pagos-estibador?${query}`, { headers: authHeaders() }),
         axios.get(`${API}/reportes/costos-operacion?${query}`, { headers: authHeaders() }),
-        axios.get(`${API}/reportes/inconsistencias?${query}`, { headers: authHeaders() })
+        axios.get(`${API}/reportes/inconsistencias?${query}`, { headers: authHeaders() }),
+        axios.get(`${API}/reportes/rutas-choferes?${rutasChoferesParams.toString()}`, { headers: authHeaders() }),
+        axios.get(`${API}/reportes/gastos-viaje?${gastosViajeParams.toString()}`, { headers: authHeaders() }),
+        axios.get(`${API}/reportes/viajes-facturar?${viajesFacturarParams.toString()}`, { headers: authHeaders() })
       ])
 
       setReportePagos(pagosResult.data?.rows || [])
       setReporteCostosRuta(costosResult.data?.costos_por_ruta || [])
       setReporteCostosCamion(costosResult.data?.costos_por_camion || [])
+      setReporteRutasChoferes(rutasChoferesResult.data?.rows || [])
+      setReporteGastosViaje(gastosViajeResult.data?.rows || [])
+      setReporteGastosViajeDetalle([])
+      setReporteGastosViajeSeleccionado(null)
       setReporteEstibadoresSinAsignacion(inconsistenciasResult.data?.estibadores_pagables_sin_asignacion || [])
       setReporteViajesSinEstibadores(inconsistenciasResult.data?.viajes_sin_estibadores || [])
+      setReporteViajesFacturar(viajesFacturarResult.data?.rows || [])
     } catch (err) {
       setReporteMessage(err?.response?.data?.error || 'No se pudieron cargar los reportes')
       setReportePagos([])
       setReporteCostosRuta([])
       setReporteCostosCamion([])
+      setReporteRutasChoferes([])
+      setReporteGastosViaje([])
+      setReporteGastosViajeDetalle([])
+      setReporteGastosViajeSeleccionado(null)
       setReporteEstibadoresSinAsignacion([])
       setReporteViajesSinEstibadores([])
+      setReporteViajesFacturar([])
     }
+  }
+
+  async function cargarDetalleGastosViaje(viajeDbId, viajeRow = null) {
+    if (!viajeDbId) return
+    try {
+      setReporteMessage('')
+      const r = await axios.get(`${API}/reportes/gastos-viaje/${viajeDbId}/detalle`, { headers: authHeaders() })
+      setReporteGastosViajeDetalle(r.data?.rows || [])
+      setReporteGastosViajeSeleccionado(viajeRow || null)
+    } catch (err) {
+      setReporteMessage(err?.response?.data?.error || 'No se pudo cargar el detalle de gastos del viaje')
+      setReporteGastosViajeDetalle([])
+      setReporteGastosViajeSeleccionado(null)
+    }
+  }
+
+  function exportarGastosViajeExcel() {
+    const rows = reporteGastosViaje || []
+    if (rows.length === 0) {
+      setReporteMessage('No hay datos para exportar en Gastos x Viaje.')
+      return
+    }
+
+    const totalGeneralGastos = rows.reduce((acc, item) => acc + Number(item.total_gastos || 0), 0)
+
+    const escapeXml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+
+    const headers = ['Viaje', 'Fecha', 'Camion', 'Chofer', 'Ruta', 'Total gastos']
+
+    const dataRows = rows.map((item) => ([
+      item.viaje_id,
+      String(item.fecha || '').slice(0, 10),
+      `${item.camion_nombre || ''} - ${item.placa || ''}`.trim(),
+      item.chofer_nombre,
+      item.ruta_nombre,
+      Number(item.total_gastos || 0).toFixed(2)
+    ]))
+
+    dataRows.push(['', '', '', '', 'TOTAL GENERAL', totalGeneralGastos.toFixed(2)])
+
+    const sheetRowsXml = [headers, ...dataRows]
+      .map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="String">${escapeXml(cell)}</Data></Cell>`).join('')}</Row>`)
+      .join('')
+
+    const xml = `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <Worksheet ss:Name="Gastos x Viaje">
+  <Table>${sheetRowsXml}</Table>
+ </Worksheet>
+</Workbook>`
+
+    const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `gastos_x_viaje_${reporteDesde}_${reporteHasta}.xls`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  function exportarViajesFacturarExcel() {
+    const rows = reporteViajesFacturar || []
+    if (rows.length === 0) {
+      setReporteMessage('No hay datos para exportar en Viajes x Facturar.')
+      return
+    }
+
+    const totalGeneral = rows.reduce((acc, item) => acc + Number(item.valor_a_cobrar || 0), 0)
+
+    const escapeXml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+
+    const headers = ['Viaje', 'Fecha', 'Camion', 'Placa', 'Chofer', 'Ruta', 'Tipo ruta', 'Valor a cobrar']
+
+    const dataRows = rows.map((item) => ([
+      item.viaje_id,
+      String(item.fecha || '').slice(0, 10),
+      item.camion_nombre || '',
+      item.placa || '',
+      item.chofer_nombre,
+      item.ruta_nombre,
+      item.ruta_tipo,
+      Number(item.valor_a_cobrar || 0).toFixed(2)
+    ]))
+
+    dataRows.push(['', '', '', '', '', '', 'TOTAL A COBRAR', totalGeneral.toFixed(2)])
+
+    const sheetRowsXml = [headers, ...dataRows]
+      .map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="String">${escapeXml(cell)}</Data></Cell>`).join('')}</Row>`)
+      .join('')
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+          xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Worksheet ss:Name="Viajes x Facturar">
+  <Table>
+   ${sheetRowsXml}
+  </Table>
+ </Worksheet>
+</Workbook>`
+
+    const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `viajes_x_facturar_${reporteDesde}_${reporteHasta}.xls`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   function normalizePayload(catalogKey) {
@@ -1424,21 +1697,20 @@ export default function App() {
         km_final: Number(viajeForm.km_final || 0)
       }
 
-      if (editingViajeId) {
-        await axios.put(`${API}/viajes/${editingViajeId}`, {
-          ...commonPayload,
-          ruta_id: Number(viajeForm.ruta_id)
-        }, { headers: authHeaders() })
-      } else {
-        const selectedRutaIds = Array.isArray(viajeForm.ruta_ids)
-          ? viajeForm.ruta_ids.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0)
-          : []
+      const selectedRutaIds = Array.isArray(viajeForm.ruta_ids)
+        ? viajeForm.ruta_ids.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0)
+        : []
 
-        await axios.post(`${API}/viajes`, {
-          ...commonPayload,
-          ruta_id: selectedRutaIds[0] || Number(viajeForm.ruta_id),
-          ruta_ids: selectedRutaIds
-        }, { headers: authHeaders() })
+      const payload = {
+        ...commonPayload,
+        ruta_id: selectedRutaIds[0] || Number(viajeForm.ruta_id),
+        ruta_ids: selectedRutaIds
+      }
+
+      if (editingViajeId) {
+        await axios.put(`${API}/viajes/${editingViajeId}`, payload, { headers: authHeaders() })
+      } else {
+        await axios.post(`${API}/viajes`, payload, { headers: authHeaders() })
       }
 
       setViajeForm(createInitialViajeForm())
@@ -1452,6 +1724,12 @@ export default function App() {
   }
 
   function startEditViaje(viaje) {
+    // Cargar todas las rutas asociadas al viaje
+    const rutasAsociadas = viaje.rutas_asociadas || []
+    const rutaIds = rutasAsociadas.length > 0 
+      ? rutasAsociadas.map(r => String(r.id))
+      : [String(viaje.ruta_id)]
+    
     setViajeForm({
       viaje_id: viaje.viaje_id,
       fecha_desde: String(viaje.fecha_desde || viaje.fecha || '').slice(0, 10),
@@ -1459,7 +1737,7 @@ export default function App() {
       camion_id: String(viaje.camion_id),
       conductor_id: String(viaje.conductor_id),
       ruta_id: String(viaje.ruta_id),
-      ruta_ids: [String(viaje.ruta_id)],
+      ruta_ids: rutaIds,
       estado_viaje_id: String(viaje.estado_viaje_id),
       tipo_operacion: viaje.tipo_operacion || 'carga',
       km_inicial: String(viaje.km_inicial ?? ''),
@@ -1474,7 +1752,7 @@ export default function App() {
       setBitacoraMessage('No tienes permiso para eliminar en Bitacora')
       return
     }
-    const confirmed = window.confirm(`?Seguro que deseas eliminar el viaje ${viaje.viaje_id}?`)
+    const confirmed = window.confirm(`¿Seguro que deseas eliminar el viaje ${viaje.viaje_id}?`)
     if (!confirmed) return
 
     try {
@@ -1483,9 +1761,13 @@ export default function App() {
 
       if (String(selectedViajeId) === String(viaje.id)) {
         setSelectedViajeId('')
+        localStorage.removeItem('selectedViajeId')
         setGastos([])
         setCargas([])
         setViajePersonal([])
+        setViaticosRutaLargaLista([])
+        // Limpiar localStorage de viáticos de este viaje
+        localStorage.removeItem(`viaticos_${viaje.id}`)
       }
 
       if (editingViajeId === viaje.id) {
@@ -1556,20 +1838,17 @@ export default function App() {
     }
     if (!selectedViajeId) return
     try {
-      const selectedViaje = (viajes || []).find((viaje) => String(viaje.id) === String(selectedViajeId))
-      const ruta = (catalogRows.rutas || []).find((item) => Number(item.id) === Number(selectedViaje?.ruta_id))
-      const rutaTipo = String(selectedViaje?.ruta_tipo || ruta?.tipo || '').toLowerCase()
-      const isRutaCorta = rutaTipo === 'corta'
-
       const payload = {
         valor_carga: Number(cargaForm.valor_carga || 0)
       }
 
-      if (isRutaCorta) {
-        payload.cantidad = 1
-      } else {
+      // Si se proporcionó producto_id, es carga de ruta larga (con producto y cantidad)
+      // Si no, es carga de ruta corta (solo valor, cantidad default 1)
+      if (cargaForm.producto_id) {
         payload.producto_id = Number(cargaForm.producto_id)
         payload.cantidad = Number(cargaForm.cantidad || 0)
+      } else {
+        payload.cantidad = 1
       }
 
       if (editingCargaId) {
@@ -1612,6 +1891,111 @@ export default function App() {
     }
   }
 
+  async function generarAjusteDesdeViaticos() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) {
+      setBitacoraMessage('Selecciona un viaje')
+      return
+    }
+    
+    // Verificar si ya fue generado
+    const yaGenerado = localStorage.getItem(`viaticos_generado_${selectedViajeId}`)
+    if (yaGenerado) {
+      setBitacoraMessage('Ya existe un ajuste generado para este viaje. Elimínalo del módulo de Sobrantes y Faltantes para generar uno nuevo.')
+      return
+    }
+    
+    if (viaticosRutaLargaLista.length === 0) {
+      setBitacoraMessage('Agrega al menos una transferencia de viáticos')
+      return
+    }
+    
+    try {
+      setBitacoraMessage('')
+      const selectedViaje = (viajes || []).find((viaje) => String(viaje.id) === String(selectedViajeId))
+      if (!selectedViaje) {
+        setBitacoraMessage('Viaje no encontrado')
+        return
+      }
+      
+      const totalGastosActual = (gastos || []).reduce((acc, item) => acc + Number(item.valor || 0), 0)
+      
+      let ajustesGenerados = []
+      for (const viatico of viaticosRutaLargaLista) {
+        if (viatico.tipo) continue // Ya fue generado
+        
+        const valorTransferencia = Number(viatico.valor || 0)
+        const diferencia = Math.abs(valorTransferencia - totalGastosActual)
+        const tipo = valorTransferencia > totalGastosActual ? 'faltante' : 'sobrante'
+        
+        const payload = {
+          viaje_id: Number(selectedViajeId),
+          banco_id: Number(viatico.banco_id || viaticosRutaLargaForm.banco_id),
+          valor_transferencia: valorTransferencia,
+          comprobante: viatico.comprobante,
+          tipo_ajuste: tipo,
+          diferencia: diferencia
+        }
+        
+        await axios.post(`${API}/viajes/${selectedViajeId}/viaticos-ajuste`, payload, { headers: authHeaders() })
+        ajustesGenerados.push({ tipo, diferencia })
+      }
+      
+      if (ajustesGenerados.length > 0) {
+        const detalles = ajustesGenerados.map((a) => `${a.tipo === 'faltante' ? 'Faltante' : 'Sobrante'}: $${a.diferencia.toFixed(2)}`).join(' | ')
+        setBitacoraMessage(`${ajustesGenerados.length} ajuste(s) generado(s): ${detalles}. Puedes verlos en el módulo de Sobrantes y Faltantes.`)
+        
+        // Marcar como generado en localStorage
+        localStorage.setItem(`viaticos_generado_${selectedViajeId}`, JSON.stringify({ generado: true, fecha: new Date().toISOString() }))
+        
+        await fetchViajeDetalles(selectedViajeId)
+        await fetchAjustesPersonal()
+      }
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo generar los ajustes')
+    }
+  }
+
+  function agregarViaticosRutaLarga() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!viaticosRutaLargaForm.banco_id || !viaticosRutaLargaForm.valor) {
+      setBitacoraMessage('Completa los campos de banco y valor')
+      return
+    }
+    
+    const banco = (catalogRows.bancos || []).find((b) => String(b.id) === String(viaticosRutaLargaForm.banco_id))
+    const nuevoViatico = {
+      id: Date.now(),
+      banco_id: viaticosRutaLargaForm.banco_id,
+      banco_nombre: banco?.nombre || '',
+      valor: Number(viaticosRutaLargaForm.valor),
+      comprobante: viaticosRutaLargaForm.comprobante
+    }
+    const nuevaLista = [...viaticosRutaLargaLista, nuevoViatico]
+    setViaticosRutaLargaLista(nuevaLista)
+    // Guardar en localStorage
+    if (selectedViajeId) {
+      localStorage.setItem(`viaticos_${selectedViajeId}`, JSON.stringify(nuevaLista))
+    }
+    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
+    setBitacoraMessage('Transferencia de viáticos agregada a la lista')
+  }
+
+  function removerViaticosRutaLarga(id) {
+    const nuevaLista = viaticosRutaLargaLista.filter((v) => v.id !== id)
+    setViaticosRutaLargaLista(nuevaLista)
+    // Actualizar localStorage
+    if (selectedViajeId) {
+      localStorage.setItem(`viaticos_${selectedViajeId}`, JSON.stringify(nuevaLista))
+    }
+  }
+
   async function uploadBiometricoTxt() {
     if (!canModifyModule('biometrico')) {
       setBiometricoMessage('No tienes permiso para modificar en Biometrico')
@@ -1627,7 +2011,7 @@ export default function App() {
       setPopupErrors([])
       const formData = new FormData()
       formData.append('file', biometricoFile)
-      await axios.post(`${API}/biometrico/import`, formData, {
+      const response = await axios.post(`${API}/biometrico/import`, formData, {
         headers: {
           ...authHeaders(),
           'Content-Type': 'multipart/form-data'
@@ -1635,7 +2019,16 @@ export default function App() {
       })
       setBiometricoFile(null)
       await Promise.all([fetchBiometricoImports(), fetchBiometricoMarcas()])
-      setBiometricoMessage('Importacion exitosa.')
+      const warningRows = Number(response?.data?.warning_rows || 0)
+      const details = response?.data?.details
+      if (Array.isArray(details) && details.length > 0) {
+        setPopupErrors(details)
+      }
+      setBiometricoMessage(
+        warningRows > 0
+          ? `Importacion completada con advertencias. Filas validas: ${response?.data?.valid_rows || 0}, omitidas: ${warningRows}.`
+          : 'Importacion exitosa.'
+      )
     } catch (err) {
       const details = err?.response?.data?.details
       if (Array.isArray(details) && details.length > 0) {
@@ -1683,8 +2076,9 @@ export default function App() {
 
   function logout() {
     localStorage.removeItem('token')
+    localStorage.removeItem('selectedViajeId') // Limpiar por privacidad
     setToken('')
-    setCurrentView('dashboard')
+    navigateTo('dashboard')
     setCatalogRows({})
     setFormValues({})
     setEditingId(null)
@@ -1696,6 +2090,8 @@ export default function App() {
     setViajePersonalId('')
     setEditingGastoId(null)
     setEditingCargaId(null)
+    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
+    setViaticosRutaLargaLista([])
     setBiometricoImports([])
     setBiometricoMarcas([])
     setPopupErrors([])
@@ -1742,6 +2138,7 @@ export default function App() {
     setSelectedAdminAccessId('')
     setAdminAccessForm(createFullAccessMatrix())
     setAdminAccessMessage('')
+    
   }
 
   const dashboardStats = useMemo(() => {
@@ -2064,6 +2461,37 @@ export default function App() {
     return String(value ?? '-')
   }
 
+  // ── Paginación universal ────────────────────────────────────────────
+  function paginate(items, key) {
+    const { page = 0, pageSize = 10 } = pagination[key] || {}
+    const totalPages = Math.max(1, Math.ceil(items.length / pageSize))
+    const safePage = Math.min(Math.max(0, page), totalPages - 1)
+    return items.slice(safePage * pageSize, (safePage + 1) * pageSize)
+  }
+
+  function renderPager(totalItems, key) {
+    const { page = 0, pageSize = 10 } = pagination[key] || {}
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
+    const safePage = Math.min(Math.max(0, page), totalPages - 1)
+    if (totalItems === 0) return null
+    const setP = (p) => setPagination((prev) => ({ ...prev, [key]: { pageSize: (prev[key] || { pageSize: 10 }).pageSize, page: p } }))
+    const setSz = (s) => setPagination((prev) => ({ ...prev, [key]: { page: 0, pageSize: s } }))
+    return (
+      <div className="pager">
+        <span className="pager-info">{Math.min(safePage * pageSize + 1, totalItems)}–{Math.min((safePage + 1) * pageSize, totalItems)} de {totalItems}</span>
+        <select className="pager-size" value={pageSize} onChange={(e) => setSz(Number(e.target.value))}>
+          {[10, 25, 50, 100].map((s) => <option key={s} value={s}>{s} / pág</option>)}
+        </select>
+        <button className="pager-btn" disabled={safePage === 0} onClick={() => setP(0)}>«</button>
+        <button className="pager-btn" disabled={safePage === 0} onClick={() => setP(safePage - 1)}>‹</button>
+        <span className="pager-pages">{safePage + 1} / {totalPages}</span>
+        <button className="pager-btn" disabled={safePage >= totalPages - 1} onClick={() => setP(safePage + 1)}>›</button>
+        <button className="pager-btn" disabled={safePage >= totalPages - 1} onClick={() => setP(totalPages - 1)}>»</button>
+      </div>
+    )
+  }
+  // ────────────────────────────────────────────────────────────────────
+
   function renderCatalogInput(field) {
     const isPersonalAdminField = currentView === 'personal' && field.key === 'password'
     if (isPersonalAdminField) {
@@ -2234,12 +2662,15 @@ export default function App() {
           <table>
             <thead>
               <tr>
-                {catalog.columns.map((column) => <th key={column}>{column}</th>)}
+                {catalog.columns.map((column) => {
+                  const fieldDefinition = catalog.fields.find((field) => field.key === column)
+                  return <th key={column}>{fieldDefinition?.label || column}</th>
+                })}
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {paginate(rows, `cat_${catalogKey}`).map((row) => (
                 <tr key={row.id}>
                   {catalog.columns.map((column) => <td key={`${row.id}-${column}`}>{resolveDisplayValue(catalogKey, column, row)}</td>)}
                   <td className="table-actions">
@@ -2251,6 +2682,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(rows.length, `cat_${catalogKey}`)}
         </div>
       </section>
     )
@@ -2397,7 +2829,7 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => (
+              {paginate(filteredRows, 'personal').map((row) => (
                 <tr key={row.id}>
                   <td>{row.documento || '-'}</td>
                   <td>{row.nombre || '-'}</td>
@@ -2416,6 +2848,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(filteredRows.length, 'personal')}
         </div>
       </section>
     )
@@ -2425,7 +2858,24 @@ export default function App() {
     const selectedViaje = (viajes || []).find((viaje) => String(viaje.id) === String(selectedViajeId))
     const rutaSelected = (catalogRows.rutas || []).find((item) => Number(item.id) === Number(selectedViaje?.ruta_id))
     const rutaTipo = String(selectedViaje?.ruta_tipo || rutaSelected?.tipo || '').toLowerCase()
-    const isRutaCorta = rutaTipo === 'corta'
+    
+    // Analizar todas las rutas asociadas al viaje
+    const rutasAsociadas = selectedViaje?.rutas_asociadas || []
+    const tiposRutasSet = new Set(rutasAsociadas.map(r => String(r.tipo || '').toLowerCase()))
+    const tieneRutasCortas = tiposRutasSet.has('corta')
+    const tieneRutasLargas = tiposRutasSet.has('larga')
+    const tieneRutasMixtas = tiposRutasSet.has('mixto')
+    
+    // Lógica de visualización de campos de carga:
+    // - Solo rutas cortas: solo mostrar valor_carga
+    // - Solo rutas largas: mostrar producto, cantidad y valor_carga
+    // - Rutas mixtas (cortas + largas o cualquier combinación con mixtas): mostrar ambas opciones
+    const mostrarCargaRutaCorta = tieneRutasCortas || tieneRutasMixtas
+    const mostrarCargaRutaLarga = tieneRutasLargas || tieneRutasMixtas
+    
+    // Para compatibilidad con código existente (viáticos, etc.)
+    const isRutaCorta = !tieneRutasLargas && !tieneRutasMixtas && tieneRutasCortas
+    
     const totalGastos = (gastos || []).reduce((acc, item) => acc + Number(item.valor || 0), 0)
     const rutasActivas = (catalogRows.rutas || []).filter((ruta) => ruta.activo)
     const selectedRutaIds = Array.isArray(viajeForm.ruta_ids) ? viajeForm.ruta_ids.map((value) => String(value)) : []
@@ -2466,89 +2916,80 @@ export default function App() {
                   placeholder="Conductor"
                   options={conductores.map((p) => ({ value: String(p.id), label: p.nombre }))}
                 />
-                {editingViajeId ? (
-                  <SearchableSelect
-                    value={viajeForm.ruta_id}
-                    onChange={(nextValue) => setViajeForm((prev) => ({ ...prev, ruta_id: nextValue }))}
-                    placeholder="Ruta"
-                    options={rutasActivas.map((r) => ({ value: String(r.id), label: r.nombre }))}
-                  />
-                ) : (
-                  <div className="multi-dropdown">
-                    {(() => {
-                      const dropdownKey = 'viajes-rutas'
-                      const isOpen = multiSelectOpenKey === dropdownKey
-                      const searchText = String(multiSelectSearch[dropdownKey] || '').trim().toLowerCase()
-                      const filteredRutas = rutasActivas.filter((ruta) => String(ruta.nombre || '').toLowerCase().includes(searchText))
-                      const toggleDropdown = () => {
-                        if (isOpen) {
-                          setMultiSelectOpenKey('')
-                          setMultiSelectSearch((prev) => ({ ...prev, [dropdownKey]: '' }))
-                          return
-                        }
-                        setMultiSelectOpenKey(dropdownKey)
+                <div className="multi-dropdown">
+                  {(() => {
+                    const dropdownKey = 'viajes-rutas'
+                    const isOpen = multiSelectOpenKey === dropdownKey
+                    const searchText = String(multiSelectSearch[dropdownKey] || '').trim().toLowerCase()
+                    const filteredRutas = rutasActivas.filter((ruta) => String(ruta.nombre || '').toLowerCase().includes(searchText))
+                    const toggleDropdown = () => {
+                      if (isOpen) {
+                        setMultiSelectOpenKey('')
+                        setMultiSelectSearch((prev) => ({ ...prev, [dropdownKey]: '' }))
+                        return
                       }
+                      setMultiSelectOpenKey(dropdownKey)
+                    }
 
-                      return (
-                        <>
-                          <button
-                            type="button"
-                            className="multi-dropdown-trigger"
-                            onClick={toggleDropdown}
-                          >
-                            <span>{selectedRutaLabels.length > 0 ? selectedRutaLabels.join(', ') : 'Rutas'}</span>
-                            <span className="dropdown-chevron" aria-hidden="true">
-                              {isOpen ? (
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="18 15 12 9 6 15" />
-                                </svg>
-                              ) : (
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="6 9 12 15 18 9" />
-                                </svg>
-                              )}
-                            </span>
-                          </button>
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          className="multi-dropdown-trigger"
+                          onClick={toggleDropdown}
+                        >
+                          <span>{selectedRutaLabels.length > 0 ? selectedRutaLabels.join(', ') : 'Rutas'}</span>
+                          <span className="dropdown-chevron" aria-hidden="true">
+                            {isOpen ? (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="18 15 12 9 6 15" />
+                              </svg>
+                            ) : (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="6 9 12 15 18 9" />
+                              </svg>
+                            )}
+                          </span>
+                        </button>
 
-                          {isOpen && (
-                            <div className="multi-dropdown-menu">
-                              <input
-                                className="multi-dropdown-search"
-                                type="text"
-                                placeholder="Buscar..."
-                                value={multiSelectSearch[dropdownKey] || ''}
-                                onChange={(event) => setMultiSelectSearch((prev) => ({ ...prev, [dropdownKey]: event.target.value }))}
-                              />
-                              {filteredRutas.map((ruta) => {
-                                const checked = selectedRutaIds.includes(String(ruta.id))
-                                return (
-                                  <label className="multi-dropdown-option" key={ruta.id}>
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={() => {
-                                        setViajeForm((prev) => {
-                                          const current = Array.isArray(prev.ruta_ids) ? prev.ruta_ids.map((value) => String(value)) : []
-                                          const exists = current.includes(String(ruta.id))
-                                          const next = exists
-                                            ? current.filter((value) => value !== String(ruta.id))
-                                            : [...current, String(ruta.id)]
-                                          return { ...prev, ruta_ids: next }
-                                        })
-                                      }}
-                                    />
-                                    <span>{ruta.nombre}</span>
-                                  </label>
-                                )
-                              })}
-                              {filteredRutas.length === 0 ? <div className="search-select-empty">Sin resultados</div> : null}
-                            </div>
-                          )}
-                        </>
-                      )
-                    })()}
-                  </div>
-                )}
+                        {isOpen && (
+                          <div className="multi-dropdown-menu">
+                            <input
+                              className="multi-dropdown-search"
+                              type="text"
+                              placeholder="Buscar..."
+                              value={multiSelectSearch[dropdownKey] || ''}
+                              onChange={(event) => setMultiSelectSearch((prev) => ({ ...prev, [dropdownKey]: event.target.value }))}
+                            />
+                            {filteredRutas.map((ruta) => {
+                              const checked = selectedRutaIds.includes(String(ruta.id))
+                              return (
+                                <label className="multi-dropdown-option" key={ruta.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      setViajeForm((prev) => {
+                                        const current = Array.isArray(prev.ruta_ids) ? prev.ruta_ids.map((value) => String(value)) : []
+                                        const exists = current.includes(String(ruta.id))
+                                        const next = exists
+                                          ? current.filter((value) => value !== String(ruta.id))
+                                          : [...current, String(ruta.id)]
+                                        return { ...prev, ruta_ids: next }
+                                      })
+                                    }}
+                                  />
+                                  <span>{ruta.nombre}</span>
+                                </label>
+                              )
+                            })}
+                            {filteredRutas.length === 0 ? <div className="search-select-empty">Sin resultados</div> : null}
+                          </div>
+                        )}
+                      </>
+                    )
+                  })()}
+                </div>
                 <SearchableSelect
                   value={viajeForm.estado_viaje_id}
                   onChange={(nextValue) => setViajeForm((prev) => ({ ...prev, estado_viaje_id: nextValue }))}
@@ -2579,44 +3020,155 @@ export default function App() {
 
             <div className="card">
               <h3>Ver viajes</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Viaje ID</th>
-                    <th>Fecha</th>
-                    <th>Placa</th>
-                    <th>Conductor</th>
-                    <th>KM</th>
-                    <th>Accion</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {viajes.map((v) => (
-                    <tr key={v.id}>
-                      <td>{v.viaje_id}</td>
-                      <td>{String(v.fecha_desde || v.fecha || '').slice(0, 10)}  a  {String(v.fecha_hasta || v.fecha || '').slice(0, 10)}</td>
-                      <td>{v.placa}</td>
-                      <td>{v.conductor_nombre}</td>
-                      <td>{v.km_inicial}  a  {v.km_final}</td>
-                      <td className="table-actions">
-                        {canModifyBitacora ? <button className="small-button" onClick={() => startEditViaje(v)} title="Editar viaje" aria-label="Editar viaje"><PencilIcon /></button> : null}
-                        {canDeleteBitacora ? <button className="small-button danger" onClick={() => removeViaje(v)} title="Eliminar viaje" aria-label="Eliminar viaje"><TrashIcon /></button> : null}
-                        <button
-                          className="small-button"
-                          title="Abrir detalle"
-                          aria-label="Abrir detalle"
-                          onClick={() => {
-                            setSelectedViajeId(String(v.id))
-                            setBitacoraTab('detalle')
-                          }}
+              
+              {/* Filtros de B\u00edtacora */}
+              <div className="form-grid" style={{ marginBottom: '1rem', gap: '0.75rem' }}>
+                <input 
+                  type="date" 
+                  value={bitacoraFiltros.fecha}
+                  onChange={(e) => {
+                    setBitacoraFiltros(prev => ({ ...prev, fecha: e.target.value }))
+                    setBitacoraPaginaActual(0)
+                    if (e.target.value) fetchViajes({ ...bitacoraFiltros, fecha: e.target.value })
+                    else fetchViajes(bitacoraFiltros)
+                  }}
+                  placeholder="Filtrar por fecha"
+                  aria-label="Filtrar por fecha" 
+                />
+                <SearchableSelect
+                  value={bitacoraFiltros.ruta_id}
+                  onChange={(nextValue) => {
+                    setBitacoraFiltros(prev => ({ ...prev, ruta_id: nextValue }))
+                    setBitacoraPaginaActual(0)
+                    if (nextValue) fetchViajes({ ...bitacoraFiltros, ruta_id: nextValue })
+                    else fetchViajes(bitacoraFiltros)
+                  }}
+                  placeholder="Filtrar por ruta"
+                  options={(catalogRows.rutas || []).filter((r) => r.activo).map((r) => ({ value: String(r.id), label: r.nombre }))}
+                />
+                <SearchableSelect
+                  value={bitacoraFiltros.camion_id}
+                  onChange={(nextValue) => {
+                    setBitacoraFiltros(prev => ({ ...prev, camion_id: nextValue }))
+                    setBitacoraPaginaActual(0)
+                    if (nextValue) fetchViajes({ ...bitacoraFiltros, camion_id: nextValue })
+                    else fetchViajes(bitacoraFiltros)
+                  }}
+                  placeholder="Filtrar por camión"
+                  options={(catalogRows.camiones || []).filter((c) => c.activo).map((c) => ({ value: String(c.id), label: `${c.placa} - ${c.nombre}` }))}
+                />
+                <SearchableSelect
+                  value={bitacoraFiltros.conductor_id}
+                  onChange={(nextValue) => {
+                    setBitacoraFiltros(prev => ({ ...prev, conductor_id: nextValue }))
+                    setBitacoraPaginaActual(0)
+                    if (nextValue) fetchViajes({ ...bitacoraFiltros, conductor_id: nextValue })
+                    else fetchViajes(bitacoraFiltros)
+                  }}
+                  placeholder="Filtrar por conductor"
+                  options={conductores.map((p) => ({ value: String(p.id), label: p.nombre }))}
+                />
+                <button 
+                  onClick={() => {
+                    setBitacoraFiltros({ fecha: '', ruta_id: '', camion_id: '', conductor_id: '' })
+                    setBitacoraPaginaActual(0)
+                    fetchViajes({})
+                  }}
+                  className="secondary-button"
+                  title="Limpiar filtros"
+                  aria-label="Limpiar filtros"
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+
+              {/* Paginaci\u00f3n por D\u00eda */}
+              {(() => {
+                const diasUnicos = [...new Set(viajes.map(v => String(v.fecha || '').slice(0, 10)))].sort().reverse()
+                const diaActual = diasUnicos[bitacoraPaginaActual] || null
+                
+                return (
+                  <>
+                    {diasUnicos.length > 0 && (
+                      <div className="bitacora-pagination">
+                        <button 
+                          className="pagination-button pagination-button-prev"
+                          onClick={() => setBitacoraPaginaActual(Math.max(bitacoraPaginaActual - 1, 0))}
+                          disabled={bitacoraPaginaActual <= 0}
+                          title="D\u00eda anterior"
+                          aria-label="D\u00eda anterior"
                         >
-                          <EyeIcon />
+                          <ChevronLeftIcon size={16} />
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <div className="pagination-info">
+                          <span className="pagination-date">{diaActual || 'Sin viajes'}</span>
+                          <span className="pagination-counter">({bitacoraPaginaActual + 1} de {diasUnicos.length})</span>
+                        </div>
+                        <button 
+                          className="pagination-button pagination-button-next"
+                          onClick={() => setBitacoraPaginaActual(Math.min(bitacoraPaginaActual + 1, diasUnicos.length - 1))}
+                          disabled={bitacoraPaginaActual >= diasUnicos.length - 1}
+                          title="D\u00eda siguiente"
+                          aria-label="D\u00eda siguiente"
+                        >
+                          <ChevronRightIcon size={16} />
+                        </button>
+                      </div>
+                    )}
+
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Viaje ID</th>
+                          <th>Fecha</th>
+                          <th>Ruta</th>
+                          <th>Placa</th>
+                          <th>Conductor</th>
+                          <th>KM</th>
+                          <th>Accion</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {diaActual
+                          ? viajes
+                              .filter(v => String(v.fecha || '').slice(0, 10) === diaActual)
+                              .map((v) => (
+                                <tr key={v.id}>
+                                  <td>{v.viaje_id}</td>
+                                  <td>{String(v.fecha_desde || v.fecha || '').slice(0, 10)}  a  {String(v.fecha_hasta || v.fecha || '').slice(0, 10)}</td>
+                                  <td title={v.ruta_nombre}>{v.ruta_nombre || '-'}</td>
+                                  <td>{v.placa}</td>
+                                  <td>{v.conductor_nombre}</td>
+                                  <td>{v.km_inicial}  a  {v.km_final}</td>
+                                  <td className="table-actions">
+                                    {canModifyBitacora ? <button className="small-button" onClick={() => startEditViaje(v)} title="Editar viaje" aria-label="Editar viaje"><PencilIcon /></button> : null}
+                                    {canDeleteBitacora ? <button className="small-button danger" onClick={() => removeViaje(v)} title="Eliminar viaje" aria-label="Eliminar viaje"><TrashIcon /></button> : null}
+                                    <button
+                                      className="small-button"
+                                      title="Abrir detalle"
+                                      aria-label="Abrir detalle"
+                                      onClick={() => {
+                                        setSelectedViajeId(String(v.id))
+                                        setBitacoraTab('detalle')
+                                      }}
+                                    >
+                                      <EyeIcon />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                          : (
+                            <tr>
+                              <td colSpan="7" style={{ textAlign: 'center', padding: '1rem' }}>
+                                No hay viajes en esta fecha
+                              </td>
+                            </tr>
+                          )}
+                      </tbody>
+                    </table>
+                  </>
+                )
+              })()}
             </div>
           </>
         ) : (
@@ -2638,6 +3190,98 @@ export default function App() {
                 <p className="helper-text">Selecciona un viaje para gestionar gastos y carga.</p>
               )}
             </div>
+
+            {!isRutaCorta && selectedViaje ? (
+              <div className="card">
+                <h3>Transferencia de Viáticos - Ruta Larga</h3>
+                <div className="form-grid">
+                  <SearchableSelect
+                    value={viaticosRutaLargaForm.banco_id}
+                    onChange={(nextValue) => setViaticosRutaLargaForm((prev) => ({ ...prev, banco_id: nextValue }))}
+                    placeholder="Banco"
+                    options={(catalogRows.bancos || []).filter((b) => b.activo).map((b) => ({ value: String(b.id), label: b.nombre }))}
+                  />
+                  <input type="number" step="0.01" placeholder="Valor transferencia" value={viaticosRutaLargaForm.valor} onChange={(e) => setViaticosRutaLargaForm((prev) => ({ ...prev, valor: e.target.value }))} />
+                  <input placeholder="Comprobante" value={viaticosRutaLargaForm.comprobante} onChange={(e) => setViaticosRutaLargaForm((prev) => ({ ...prev, comprobante: e.target.value }))} />
+                  {canModifyBitacora ? <button onClick={agregarViaticosRutaLarga}>Agregar transferencia</button> : null}
+                </div>
+                <p className="helper-text">Total de gastos: <strong>${totalGastos.toFixed(2)}</strong></p>
+                {viaticosRutaLargaLista.length > 0 ? (
+                  <table>
+                    <thead><tr><th>Banco</th><th>Valor</th><th>Comprobante</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                      {viaticosRutaLargaLista.map((v) => (
+                        <tr key={v.id}>
+                          <td>{v.banco_nombre}</td>
+                          <td>${v.valor.toFixed(2)}</td>
+                          <td>{v.comprobante || '-'}</td>
+                          <td className="table-actions">
+                            {canModifyBitacora && !v.tipo ? (
+                              <button className="small-button" onClick={() => removerViaticosRutaLarga(v.id)} title="Eliminar" aria-label="Eliminar"><TrashIcon /></button>
+                            ) : v.tipo ? (
+                              <span style={{ color: v.tipo === 'faltante' ? '#ef4444' : '#ef4444', fontWeight: 'bold' }}>
+                                {v.tipo === 'faltante' ? 'Faltante' : 'Sobrante'}: ${v.diferencia.toFixed(2)}
+                              </span>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : null}
+                {viaticosRutaLargaLista.length > 0 && canModifyBitacora ? (
+                  (() => {
+                    // Verificar si al menos una transferencia tiene diferencia con los gastos
+                    const tieneDisparidad = viaticosRutaLargaLista.some((v) => {
+                      const diferencia = Math.abs(Number(v.valor || 0) - totalGastos)
+                      return diferencia > 0
+                    })
+                    
+                    return tieneDisparidad ? (
+                      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+                        <button 
+                          onClick={generarAjusteDesdeViaticos}
+                          style={{
+                            flex: 1,
+                            padding: '12px 24px',
+                            backgroundColor: '#ef4444',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '15px',
+                            fontWeight: '600',
+                            cursor: 'pointer',
+                            transition: 'all 0.3s ease',
+                            boxShadow: '0 2px 8px rgba(239, 68, 68, 0.3)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.backgroundColor = '#dc2626'
+                            e.target.style.boxShadow = '0 4px 12px rgba(239, 68, 68, 0.4)'
+                            e.target.style.transform = 'translateY(-1px)'
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.backgroundColor = '#ef4444'
+                            e.target.style.boxShadow = '0 2px 8px rgba(239, 68, 68, 0.3)'
+                            e.target.style.transform = 'translateY(0)'
+                          }}
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 5v14M5 12h14" />
+                          </svg>
+                          Generar ajuste de viáticos
+                        </button>
+                      </div>
+                    ) : null
+                  })()
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="card">
               <h3>Agregar gastos</h3>
@@ -2678,8 +3322,13 @@ export default function App() {
 
             <div className="card">
               <h3>Agregar carga</h3>
+              {mostrarCargaRutaLarga && mostrarCargaRutaCorta ? (
+                <p className="helper-text" style={{ marginBottom: '10px', fontStyle: 'italic', color: '#666' }}>
+                  ✓ Este viaje tiene rutas cortas y largas. Puedes agregar: carga de ruta larga (con producto), carga de ruta corta (sin producto), o ambas.
+                </p>
+              ) : null}
               <div className="form-grid">
-                {!isRutaCorta ? (
+                {mostrarCargaRutaLarga ? (
                   <>
                     <SearchableSelect
                       value={cargaForm.producto_id}
@@ -2691,7 +3340,7 @@ export default function App() {
                   </>
                 ) : null}
                 <input type="number" step="0.01" placeholder="Valor carga" value={cargaForm.valor_carga} onChange={(e) => setCargaForm((prev) => ({ ...prev, valor_carga: e.target.value }))} />
-                {canModifyBitacora ? <button onClick={saveCarga}>{editingCargaId ? 'Actualizar carga' : (isRutaCorta ? 'Agregar valor de carga' : 'Agregar carga')}</button> : null}
+                {canModifyBitacora ? <button onClick={saveCarga}>{editingCargaId ? 'Actualizar carga' : 'Agregar carga'}</button> : null}
                 {editingCargaId && canModifyBitacora ? <button className="secondary-button" onClick={() => { setEditingCargaId(null); setCargaForm({ producto_id: '', cantidad: '', valor_carga: '' }) }}>Cancelar edicion</button> : null}
               </div>
               <table>
@@ -2766,7 +3415,7 @@ export default function App() {
           <table>
             <thead><tr><th>ID</th><th>Archivo</th><th>Estado</th><th>Filas</th><th>Validas</th><th>Fecha</th><th>Accion</th></tr></thead>
             <tbody>
-              {biometricoImports.map((imp) => (
+              {paginate(biometricoImports, 'bio_imports').map((imp) => (
                 <tr key={imp.id}>
                   <td>{imp.id}</td>
                   <td>{imp.file_name}</td>
@@ -2781,6 +3430,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(biometricoImports.length, 'bio_imports')}
         </div>
 
         <div className="card">
@@ -2793,7 +3443,7 @@ export default function App() {
           <table>
             <thead><tr><th>Fecha</th><th>Personal</th><th>ID Biometrico</th><th>Entrada</th><th>Salida</th><th>Horas</th><th>Aplica pago</th><th>Accion</th></tr></thead>
             <tbody>
-              {biometricoMarcas.map((m) => (
+              {paginate(biometricoMarcas, 'bio_marcas').map((m) => (
                 <tr key={m.id}>
                   <td>{String(m.fecha || '').slice(0, 10)}</td>
                   <td>{m.personal_nombre}</td>
@@ -2809,6 +3459,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(biometricoMarcas.length, 'bio_marcas')}
         </div>
       </section>
     )
@@ -2901,15 +3552,32 @@ export default function App() {
   }
 
   function renderLiquidacionesView() {
-    const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana)
-    const mesActualLabel = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(new Date())
+    const [year, month] = liquidacionMesAno.split('-').map(Number)
+    const referenceDate = new Date(year, month - 1, 15)
+    const { start: semanaInicio, end: semanaFin } = getMonthWeekRange(liquidacionSemana, referenceDate)
+    const mesLabel = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(referenceDate)
     const canModifyLiquidaciones = canModifyModule('liquidaciones')
     const canDeleteLiquidaciones = canDeleteModule('liquidaciones')
+
+    const cambiarMes = (delta) => {
+      const newDate = new Date(year, month - 1 + delta, 15)
+      setLiquidacionMesAno(`${newDate.getFullYear()}-${String(newDate.getMonth() + 1).padStart(2, '0')}`)
+    }
 
     return (
       <section className="view-section">
         <div className="card form-card">
           <h3>Generar liquidacion semanal automatica</h3>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px' }}>
+            <button className="secondary-button" onClick={() => cambiarMes(-1)} title="Mes anterior">◀</button>
+            <input 
+              type="month" 
+              value={liquidacionMesAno} 
+              onChange={(e) => setLiquidacionMesAno(e.target.value)}
+              style={{ flex: '1', padding: '8px' }}
+            />
+            <button className="secondary-button" onClick={() => cambiarMes(1)} title="Mes siguiente">▶</button>
+          </div>
           <div className="form-grid">
             <SearchableSelect
               value={liquidacionSemana}
@@ -2927,7 +3595,7 @@ export default function App() {
             <button className="secondary-button" onClick={() => fetchLiquidaciones(liquidacionSemana)}>Consultar semana</button>
             {canDeleteLiquidaciones ? <button className="secondary-button" onClick={eliminarLiquidacionesSemana} title="Eliminar semana" aria-label="Eliminar semana"><TrashIcon /></button> : null}
           </div>
-          <p className="helper-text">Mes: {mesActualLabel}  -  Rango aplicado: {semanaInicio}  a  {semanaFin}</p>
+          <p className="helper-text">Mes: {mesLabel}  -  Rango aplicado: {semanaInicio}  a  {semanaFin}</p>
           {liquidacionMessage ? <p className="helper-text">{liquidacionMessage}</p> : null}
         </div>
 
@@ -2936,7 +3604,7 @@ export default function App() {
           <table>
             <thead><tr><th>Estibador</th><th>Cuenta banco</th><th>Semana</th><th>Total</th><th>Estado</th><th>Justificacion TXT</th><th>Detalle</th></tr></thead>
             <tbody>
-              {liquidaciones.map((item) => (
+              {paginate(liquidaciones, 'liquidaciones').map((item) => (
                 <tr key={item.id}>
                   <td>{item.estibador_nombre}</td>
                   <td>{item.numero_cuenta || '-'}</td>
@@ -2949,26 +3617,33 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(liquidaciones.length, 'liquidaciones')}
         </div>
 
         <div className="card">
           <h3>Detalle de liquidacion {selectedLiquidacionId ? `#${selectedLiquidacionId}` : ''}</h3>
           <table>
-            <thead><tr><th>Tipo</th><th>Referencia</th><th>Fecha</th><th>Detalle</th><th>Estibador</th><th>Monto</th><th>TXT</th></tr></thead>
+            <thead><tr><th>Tipo</th><th>Referencia</th><th>Fecha</th><th>Rutas</th><th>Detalle</th><th>Estibador</th><th>Monto</th><th>TXT</th></tr></thead>
             <tbody>
-              {liquidacionDetalle.map((row) => (
+              {paginate(liquidacionDetalle, 'liq_detalle').map((row) => (
                 <tr key={row.id}>
                   <td>{String(row.detalle_tipo || '').toLowerCase() === 'ajuste' ? 'Ajuste' : 'Viaje'}</td>
-                  <td>{row.referencia || row.viaje_codigo || '-'}</td>
-                  <td>{String(row.fecha || '').slice(0, 10)}</td>
+                  <td>{row.referencia || '-'}</td>
+                  <td>{row.fecha ? String(row.fecha).slice(0, 10) : '-'}</td>
+                  <td>
+                    {Array.isArray(row.rutas_asociadas) && row.rutas_asociadas.length > 0
+                      ? row.rutas_asociadas.map((r) => r.nombre).join(', ')
+                      : '-'}
+                  </td>
                   <td>{row.detalle || '-'}</td>
                   <td>{row.estibador_nombre}</td>
-                  <td>{row.monto}</td>
+                  <td style={{ color: row.monto < 0 ? '#e74c3c' : 'inherit' }}>${Number(row.monto || 0).toFixed(2)}</td>
                   <td>{row.justificado_txt === null || row.justificado_txt === undefined ? '-' : (row.justificado_txt ? 'Justificado' : 'Pendiente TXT')}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {renderPager(liquidacionDetalle.length, 'liq_detalle')}
         </div>
       </section>
     )
@@ -3034,7 +3709,7 @@ export default function App() {
           <table>
             <thead><tr><th>ID</th><th>liquidacion</th><th>Estibador</th><th>Banco</th><th>Fecha pago</th><th>Monto</th><th>Estado</th><th>Comprobante</th><th>Acciones</th></tr></thead>
             <tbody>
-              {pagos.map((item) => (
+              {paginate(pagos, 'pagos').map((item) => (
                 <tr key={item.id}>
                   <td>{item.id}</td>
                   <td>#{item.liquidacion_id}</td>
@@ -3053,6 +3728,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(pagos.length, 'pagos')}
         </div>
 
         <div className="card form-card">
@@ -3107,7 +3783,7 @@ export default function App() {
           <table>
             <thead><tr><th>ID</th><th>Rol</th><th>periodo</th><th>Empleado</th><th>Banco</th><th>Fecha pago</th><th>Monto</th><th>Estado</th><th>Comprobante</th><th>Acciones</th></tr></thead>
             <tbody>
-              {pagosRolesMensuales.map((item) => (
+              {paginate(pagosRolesMensuales, 'pagos_roles').map((item) => (
                 <tr key={item.id}>
                   <td>{item.id}</td>
                   <td>#{item.rol_mensual_id}</td>
@@ -3127,6 +3803,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(pagosRolesMensuales.length, 'pagos_roles')}
         </div>
       </section>
     )
@@ -3215,7 +3892,7 @@ export default function App() {
               <tr><th>Empleado</th><th>Tipo</th><th>Detalle</th><th>Valor</th><th>Cuotas</th><th>Frecuencia</th><th>Fecha inicio</th><th>Estado</th><th>Acciones</th></tr>
             </thead>
             <tbody>
-              {filteredRows.map((item) => (
+              {paginate(filteredRows, 'ajustes').map((item) => (
                 <tr key={item.id}>
                   <td>{`${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}`.trim()}</td>
                   <td>{item.tipo}</td>
@@ -3227,9 +3904,8 @@ export default function App() {
                   <td>{item.estado}</td>
                   <td className="table-actions">
                     {canModifyAjustes ? <button className="small-button" onClick={() => startEditAjuste(item)} title="Editar" aria-label="Editar"><PencilIcon /></button> : null}
-                    {canModifyAjustes && !['finalizado', 'generado', 'pagado'].includes(String(item.estado || '').toLowerCase()) ? <button className="small-button" onClick={() => changeAjusteEstado(item, item.estado === 'activo' ? 'pausado' : 'activo')}>{item.estado === 'activo' ? 'Pausar' : 'Activar'}</button> : null}
-                    {canModifyAjustes && item.estado !== 'cancelado' && !['finalizado', 'generado', 'pagado'].includes(String(item.estado || '').toLowerCase()) ? <button className="small-button danger" onClick={() => changeAjusteEstado(item, 'cancelado')}>Cancelar</button> : null}
-                    {canDeleteAjustes && !['finalizado', 'generado', 'pagado'].includes(String(item.estado || '').toLowerCase()) ? <button className="small-button danger" onClick={() => removeAjustePersonal(item)} title="Eliminar" aria-label="Eliminar"><TrashIcon /></button> : null}
+                    {canModifyAjustes && !['finalizado', 'generado', 'pagado'].includes(String(item.estado || '').toLowerCase()) ? <button className="small-button" onClick={() => changeAjusteEstado(item, item.estado === 'activo' ? 'pausado' : 'activo')} title={item.estado === 'activo' ? 'Pausar' : 'Activar'} aria-label={item.estado === 'activo' ? 'Pausar' : 'Activar'}>{item.estado === 'activo' ? <PauseIcon size={13} /> : <PlayIcon size={13} />}</button> : null}
+                    {canModifyAjustes && item.estado !== 'cancelado' && !['finalizado', 'generado', 'pagado'].includes(String(item.estado || '').toLowerCase()) ? <button className="small-button danger" onClick={() => changeAjusteEstado(item, 'cancelado')} title="Cancelar" aria-label="Cancelar"><TrashIcon /></button> : null}
                     {canDeleteAjustes && String(item.estado || '').toLowerCase() === 'generado' ? <button className="small-button danger" onClick={() => removeAjustePersonal(item)} title="Borrar generado" aria-label="Borrar generado">Borrar generado</button> : null}
                     {!canModifyAjustes && !canDeleteAjustes ? '-' : null}
                   </td>
@@ -3237,6 +3913,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(filteredRows.length, 'ajustes')}
         </div>
       </section>
     )
@@ -3266,7 +3943,7 @@ export default function App() {
               <tr><th>Empleado</th><th>periodo</th><th>Ingresos</th><th>Egresos</th><th>Neto</th><th>Estado</th><th>Acciones</th></tr>
             </thead>
             <tbody>
-              {rolesRows.map((item) => (
+              {paginate(rolesRows, 'roles_mens').map((item) => (
                 <tr key={item.id}>
                   <td>{`${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}`.trim()}</td>
                   <td>{item.periodo_mes}</td>
@@ -3284,6 +3961,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(rolesRows.length, 'roles_mens')}
         </div>
 
         <div className="card">
@@ -3299,6 +3977,24 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              {(rolDetalle.ajustes || []).length > 0 ? (
+                <>
+                  <h4 style={{ marginTop: 16, marginBottom: 6 }}>Sobrantes / Faltantes aplicados</h4>
+                  <table>
+                    <thead><tr><th>Tipo</th><th>Detalle</th><th>Cuota</th><th>Monto</th></tr></thead>
+                    <tbody>
+                      {(rolDetalle.ajustes || []).map((aj) => (
+                        <tr key={aj.id}>
+                          <td>{aj.tipo}</td>
+                          <td>{aj.detalle || '-'}</td>
+                          <td>{aj.cantidad_cuotas > 1 ? `${aj.cuota_actual} / ${aj.cantidad_cuotas}` : '-'}</td>
+                          <td>{Number(aj.monto || 0).toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : null}
             </>
           )}
         </div>
@@ -3307,24 +4003,68 @@ export default function App() {
   }
 
   function renderReportesView() {
+    const reporteRutasChoferesTotalPagar = (reporteRutasChoferes || []).reduce(
+      (acc, item) => acc + Number(item.valor_a_pagar || 0),
+      0
+    )
+    const reporteGastosViajeTotalGeneral = (reporteGastosViaje || []).reduce(
+      (acc, item) => acc + Number(item.total_gastos || 0),
+      0
+    )
+
     return (
       <section className="view-section">
+        <div className="card bitacora-tabs-card">
+          <div className="bitacora-tabs">
+            <button className={`bitacora-tab ${reporteSubmenu === 'basicos' ? 'active' : ''}`} onClick={() => setReporteSubmenu('basicos')}>Reportes basicos</button>
+            <button className={`bitacora-tab ${reporteSubmenu === 'rutas_choferes' ? 'active' : ''}`} onClick={() => setReporteSubmenu('rutas_choferes')}>Rutas x Choferes</button>
+            <button className={`bitacora-tab ${reporteSubmenu === 'gastos_viaje' ? 'active' : ''}`} onClick={() => setReporteSubmenu('gastos_viaje')}>Gastos x Viaje</button>
+            <button className={`bitacora-tab ${reporteSubmenu === 'viajes_facturar' ? 'active' : ''}`} onClick={() => setReporteSubmenu('viajes_facturar')}>Viajes x Facturar</button>
+          </div>
+        </div>
+
         <div className="card form-card">
           <h3>Reportes basicos</h3>
           <div className="form-grid">
             <input type="date" value={reporteDesde} onChange={(e) => setReporteDesde(e.target.value)} />
             <input type="date" value={reporteHasta} onChange={(e) => setReporteHasta(e.target.value)} />
+            <SearchableSelect
+              value={reporteCamionId}
+              onChange={setReporteCamionId}
+              placeholder="Filtrar camión"
+              options={(catalogRows.camiones || []).filter((c) => c.activo).map((c) => ({ value: String(c.id), label: `${c.placa} - ${c.nombre}` }))}
+            />
+            <SearchableSelect
+              value={reporteChoferId}
+              onChange={setReporteChoferId}
+              placeholder="Filtrar chofer"
+              options={conductores.map((p) => ({ value: String(p.id), label: p.nombre }))}
+            />
+            <SearchableSelect
+              value={reporteRutaId}
+              onChange={setReporteRutaId}
+              placeholder="Filtrar ruta"
+              options={(catalogRows.rutas || []).filter((r) => r.activo).map((r) => ({ value: String(r.id), label: r.nombre }))}
+            />
+            <select value={reporteTipoRuta} onChange={(e) => setReporteTipoRuta(e.target.value)} style={{ height: 36 }}>
+              <option value="">Tipo ruta: todos</option>
+              <option value="corto">Ruta corta</option>
+              <option value="largo">Ruta larga</option>
+            </select>
             <button onClick={cargarReportes}>Consultar reportes</button>
+            <button className="secondary-button" onClick={() => { setReporteCamionId(''); setReporteChoferId(''); setReporteRutaId(''); setReporteTipoRuta('') }}>Limpiar filtros</button>
           </div>
           {reporteMessage ? <p className="helper-text">{reporteMessage}</p> : null}
         </div>
 
+        {reporteSubmenu === 'basicos' ? (
+          <>
         <div className="card">
           <h3>Pagos por estibador</h3>
           <table>
             <thead><tr><th>Estibador</th><th>Total pagos</th><th>Total pagado</th></tr></thead>
             <tbody>
-              {reportePagos.map((item) => (
+              {paginate(reportePagos, 'rep_pagos').map((item) => (
                 <tr key={item.personal_id}>
                   <td>{item.estibador_nombre}</td>
                   <td>{item.total_pagos}</td>
@@ -3333,6 +4073,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(reportePagos.length, 'rep_pagos')}
         </div>
 
         <div className="card">
@@ -3340,7 +4081,7 @@ export default function App() {
           <table>
             <thead><tr><th>Ruta</th><th>Viajes</th><th>Total gastos</th><th>Total carga</th></tr></thead>
             <tbody>
-              {reporteCostosRuta.map((item) => (
+              {paginate(reporteCostosRuta, 'rep_costos_ruta').map((item) => (
                 <tr key={item.ruta_id}>
                   <td>{item.ruta_nombre}</td>
                   <td>{item.viajes}</td>
@@ -3350,6 +4091,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(reporteCostosRuta.length, 'rep_costos_ruta')}
         </div>
 
         <div className="card">
@@ -3357,7 +4099,7 @@ export default function App() {
           <table>
             <thead><tr><th>Camion</th><th>Placa</th><th>Viajes</th><th>Total gastos</th><th>Total carga</th></tr></thead>
             <tbody>
-              {reporteCostosCamion.map((item) => (
+              {paginate(reporteCostosCamion, 'rep_costos_camion').map((item) => (
                 <tr key={item.camion_id}>
                   <td>{item.camion_nombre}</td>
                   <td>{item.placa}</td>
@@ -3368,6 +4110,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(reporteCostosCamion.length, 'rep_costos_camion')}
         </div>
 
         <div className="card">
@@ -3375,7 +4118,7 @@ export default function App() {
           <table>
             <thead><tr><th>Fecha</th><th>Estibador</th><th>ID Biometrico</th><th>Horas</th></tr></thead>
             <tbody>
-              {reporteEstibadoresSinAsignacion.map((item) => (
+              {paginate(reporteEstibadoresSinAsignacion, 'rep_estib').map((item) => (
                 <tr key={item.marca_id}>
                   <td>{String(item.fecha || '').slice(0, 10)}</td>
                   <td>{item.estibador_nombre}</td>
@@ -3385,6 +4128,7 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(reporteEstibadoresSinAsignacion.length, 'rep_estib')}
         </div>
 
         <div className="card">
@@ -3392,7 +4136,7 @@ export default function App() {
           <table>
             <thead><tr><th>Viaje</th><th>Fecha</th><th>Ruta</th><th>Placa</th><th>operacion</th></tr></thead>
             <tbody>
-              {reporteViajesSinEstibadores.map((item) => (
+              {paginate(reporteViajesSinEstibadores, 'rep_viajes_sin_estib').map((item) => (
                 <tr key={item.viaje_db_id}>
                   <td>{item.viaje_id}</td>
                   <td>{String(item.fecha || '').slice(0, 10)}</td>
@@ -3403,7 +4147,124 @@ export default function App() {
               ))}
             </tbody>
           </table>
+          {renderPager(reporteViajesSinEstibadores.length, 'rep_viajes_sin_estib')}
         </div>
+
+          </>
+        ) : reporteSubmenu === 'rutas_choferes' ? (
+          <div className="card">
+            <h3>Rutas x Choferes</h3>
+            <table>
+              <thead><tr><th>Fecha</th><th>Viaje</th><th>Chofer</th><th>Placa</th><th>Ruta</th><th>Tipo ruta</th><th>Valor a pagar</th></tr></thead>
+              <tbody>
+                {paginate(reporteRutasChoferes, 'rep_rutas_choferes').map((item) => (
+                  <tr key={`${item.viaje_db_id}-${item.ruta_id}`}>
+                    <td>{String(item.fecha || '').slice(0, 10)}</td>
+                    <td>{item.viaje_id}</td>
+                    <td>{item.chofer_nombre}</td>
+                    <td>{item.placa}</td>
+                    <td>{item.ruta_nombre}</td>
+                    <td>{item.ruta_tipo}</td>
+                    <td>${Number(item.valor_a_pagar || 0).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {renderPager(reporteRutasChoferes.length, 'rep_rutas_choferes')}
+            <p className="helper-text" style={{ marginTop: 10 }}>
+              Total a pagar (segun filtros aplicados): <strong>${reporteRutasChoferesTotalPagar.toFixed(2)}</strong>
+            </p>
+          </div>
+        ) : reporteSubmenu === 'gastos_viaje' ? (
+          <>
+            <div className="card">
+              <h3>Gastos x Viaje</h3>
+              <div className="actions-row" style={{ marginBottom: 10 }}>
+                <button className="secondary-button" onClick={exportarGastosViajeExcel}>Exportar a Excel</button>
+              </div>
+              <table>
+                <thead><tr><th>Viaje</th><th>Fecha</th><th>Camion</th><th>Chofer</th><th>Ruta</th><th>Total gastos</th><th>Accion</th></tr></thead>
+                <tbody>
+                  {paginate(reporteGastosViaje, 'rep_gastos_viaje').map((item) => (
+                    <tr key={item.viaje_db_id}>
+                      <td>{item.viaje_id}</td>
+                      <td>{String(item.fecha || '').slice(0, 10)}</td>
+                      <td>{`${item.camion_nombre || ''} - ${item.placa || ''}`.trim()}</td>
+                      <td>{item.chofer_nombre}</td>
+                      <td>{item.ruta_nombre}</td>
+                      <td>${Number(item.total_gastos || 0).toFixed(2)}</td>
+                      <td className="table-actions">
+                        <button className="small-button" onClick={() => cargarDetalleGastosViaje(item.viaje_db_id, item)} title="Ver detalle de gastos" aria-label="Ver detalle de gastos"><EyeIcon /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {renderPager(reporteGastosViaje.length, 'rep_gastos_viaje')}
+              <p className="helper-text" style={{ marginTop: 10 }}>
+                Total general de gastos (segun filtros aplicados): <strong>${reporteGastosViajeTotalGeneral.toFixed(2)}</strong>
+              </p>
+            </div>
+
+            {reporteGastosViajeSeleccionado ? (
+              <div className="card">
+                <h3>Detalle de gastos del viaje {reporteGastosViajeSeleccionado.viaje_id ? `#${reporteGastosViajeSeleccionado.viaje_id}` : ''}</h3>
+                <p className="helper-text">
+                  {String(reporteGastosViajeSeleccionado.fecha || '').slice(0, 10)} - {`${reporteGastosViajeSeleccionado.camion_nombre || ''} - ${reporteGastosViajeSeleccionado.placa || ''}`.trim()} - {reporteGastosViajeSeleccionado.chofer_nombre} - {reporteGastosViajeSeleccionado.ruta_nombre}
+                </p>
+                <table>
+                  <thead><tr><th>Tipo gasto</th><th>Valor</th><th>Observacion</th><th>Comprobante</th><th>Fecha registro</th></tr></thead>
+                  <tbody>
+                    {reporteGastosViajeDetalle.map((gasto) => (
+                      <tr key={gasto.id}>
+                        <td>{gasto.tipo_gasto}</td>
+                        <td>${Number(gasto.valor || 0).toFixed(2)}</td>
+                        <td>{gasto.observacion || '-'}</td>
+                        <td>{gasto.numero_comprobante || '-'}</td>
+                        <td>{String(gasto.created_at || '').slice(0, 10)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="card">
+            <h3>Viajes x Facturar</h3>
+            <div className="actions-row" style={{ marginBottom: 10 }}>
+              <button className="secondary-button" onClick={exportarViajesFacturarExcel}>Exportar a Excel</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Viaje</th><th>Fecha</th><th>Camion</th><th>Placa</th><th>Chofer</th><th>Ruta</th><th>Tipo ruta</th><th>Valor a cobrar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginate(reporteViajesFacturar || [], 'rep_viajes_facturar').map((item) => (
+                  <tr key={`${item.viaje_db_id}-${item.ruta_id}`}>
+                    <td>{item.viaje_id}</td>
+                    <td>{String(item.fecha || '').slice(0, 10)}</td>
+                    <td>{item.camion_nombre}</td>
+                    <td>{item.placa}</td>
+                    <td>{item.chofer_nombre}</td>
+                    <td>{item.ruta_nombre}</td>
+                    <td>{item.ruta_tipo}</td>
+                    <td>${Number(item.valor_a_cobrar || 0).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {renderPager((reporteViajesFacturar || []).length, 'rep_viajes_facturar')}
+            <p className="helper-text" style={{ marginTop: 10 }}>
+              Total a cobrar (segun filtros aplicados):{' '}
+              <strong>
+                ${(reporteViajesFacturar || []).reduce((acc, item) => acc + Number(item.valor_a_cobrar || 0), 0).toFixed(2)}
+              </strong>
+            </p>
+          </div>
+        )}
       </section>
     )
   }
@@ -3729,13 +4590,19 @@ export default function App() {
           </div>
           <nav className="menu">
             {MAIN_MENU_ITEMS.filter((item) => canAccessModule(item.key)).map((item) => (
-              <button key={item.key} className={`menu-item ${currentView === item.key ? 'active' : ''}`} onClick={() => setCurrentView(item.key)}>{item.label}</button>
+              <a
+                key={item.key}
+                href={`#/${item.key}`}
+                className={`menu-item ${currentView === item.key ? 'active' : ''}`}
+                onClick={(e) => { e.preventDefault(); navigateTo(item.key); }}
+              >{item.label}</a>
             ))}
 
             {canAccessModule('base_datos') ? (
-              <button
+              <a
+                href={`#/${CATALOG_MENU_ITEMS[0].key}`}
                 className={`menu-item ${databaseMenuOpen ? 'active' : ''}`}
-                onClick={() => setCurrentView(CATALOG_MENU_ITEMS[0].key)}
+                onClick={(e) => { e.preventDefault(); navigateTo(CATALOG_MENU_ITEMS[0].key); }}
               >
                 Base de datos <span className="dropdown-chevron" aria-hidden="true">
                   {databaseMenuOpen ? (
@@ -3748,19 +4615,20 @@ export default function App() {
                     </svg>
                   )}
                 </span>
-              </button>
+              </a>
             ) : null}
 
             {databaseMenuOpen && canAccessModule('base_datos') && (
               <div className="submenu">
                 {CATALOG_MENU_ITEMS.filter((item) => item.key !== 'empresa_logo' || canAccessModule('empresa_logo')).map((item) => (
-                  <button
+                  <a
                     key={item.key}
+                    href={`#/${item.key}`}
                     className={`submenu-item ${currentView === item.key ? 'active' : ''}`}
-                    onClick={() => setCurrentView(item.key)}
+                    onClick={(e) => { e.preventDefault(); navigateTo(item.key); }}
                   >
                     {item.label}
-                  </button>
+                  </a>
                 ))}
               </div>
             )}

@@ -122,13 +122,37 @@ CREATE TABLE IF NOT EXISTS rutas (
   nombre TEXT NOT NULL UNIQUE,
   tipo TEXT NOT NULL,
   distancia_km NUMERIC(12,2) DEFAULT 0,
-  valor NUMERIC(12,2) NOT NULL DEFAULT 0,
+  valor_a_cobrar NUMERIC(12,2) NOT NULL DEFAULT 0,
+  valor_a_pagar NUMERIC(12,2) NOT NULL DEFAULT 0,
   activo BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 ALTER TABLE rutas
-ADD COLUMN IF NOT EXISTS valor NUMERIC(12,2) NOT NULL DEFAULT 0;
+ADD COLUMN IF NOT EXISTS valor_a_cobrar NUMERIC(12,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE rutas
+ADD COLUMN IF NOT EXISTS valor_a_pagar NUMERIC(12,2) NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'rutas'
+      AND column_name = 'valor'
+  ) THEN
+    EXECUTE '
+      UPDATE rutas
+      SET valor_a_cobrar = valor
+      WHERE valor_a_cobrar IS DISTINCT FROM valor
+    ';
+  END IF;
+END $$;
+
+ALTER TABLE rutas
+DROP COLUMN IF EXISTS valor;
 
 CREATE TABLE IF NOT EXISTS estados_viaje (
   id SERIAL PRIMARY KEY,
@@ -411,6 +435,15 @@ CREATE TABLE IF NOT EXISTS pagos_roles_mensuales (
 ALTER TABLE ajustes_personal
   ADD COLUMN IF NOT EXISTS fecha_inicio DATE NOT NULL DEFAULT CURRENT_DATE;
 
+ALTER TABLE ajustes_personal
+  ADD COLUMN IF NOT EXISTS viaje_id INTEGER REFERENCES viajes(id) ON DELETE SET NULL;
+
+ALTER TABLE ajustes_personal
+  ADD COLUMN IF NOT EXISTS banco_id INTEGER REFERENCES bancos(id) ON DELETE SET NULL;
+
+ALTER TABLE ajustes_personal
+  ADD COLUMN IF NOT EXISTS comprobante_viatico TEXT;
+
 ALTER TABLE pagos_roles_mensuales
   ADD COLUMN IF NOT EXISTS estado_previo_rol TEXT NOT NULL DEFAULT 'borrador';
 
@@ -467,3 +500,11 @@ CREATE TABLE IF NOT EXISTS settlements (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
+-- Tabla para relacion muchos-a-muchos entre viajes y rutas
+CREATE TABLE IF NOT EXISTS viajes_rutas (
+  id SERIAL PRIMARY KEY,
+  viaje_id INTEGER NOT NULL REFERENCES viajes(id) ON DELETE CASCADE,
+  ruta_id INTEGER NOT NULL REFERENCES rutas(id) ON DELETE RESTRICT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  UNIQUE (viaje_id, ruta_id)
+);

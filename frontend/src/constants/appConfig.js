@@ -97,10 +97,11 @@ export const CATALOGS = {
       { key: 'nombre', label: 'Nombre', type: 'text', required: true },
       { key: 'tipo', label: 'Tipo', type: 'select_static', options: ['larga', 'corta', 'mixta'], required: true },
       { key: 'distancia_km', label: 'Distancia KM', type: 'number' },
-      { key: 'valor', label: 'Valor', type: 'number' },
+      { key: 'valor_a_cobrar', label: 'Valor a cobrar', type: 'number' },
+      { key: 'valor_a_pagar', label: 'Valor a pagar', type: 'number' },
       { key: 'activo', label: 'Activo', type: 'boolean' }
     ],
-    columns: ['id', 'nombre', 'tipo', 'distancia_km', 'valor', 'activo']
+    columns: ['id', 'nombre', 'tipo', 'distancia_km', 'valor_a_cobrar', 'valor_a_pagar', 'activo']
   },
   estados_viaje: {
     title: 'Estados de viaje',
