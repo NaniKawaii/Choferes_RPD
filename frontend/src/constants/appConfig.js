@@ -69,6 +69,7 @@ export const CATALOGS = {
       { key: 'password', label: 'Clave', type: 'password' },
       { key: 'afiliado_iess', label: 'Afiliado al IESS', type: 'boolean', defaultValue: false },
       { key: 'fecha_afiliacion_iess', label: 'Fecha afiliación IESS', type: 'date' },
+      { key: 'modalidad_pago_iess', label: 'Modalidad pago IESS', type: 'select_static', options: ['mensual', 'quincenal'], defaultValue: 'mensual' },
       { key: 'sueldo_iess', label: 'Sueldo IESS', type: 'number' },
       { key: 'sueldo_real', label: 'Sueldo Real', type: 'number' },
       { key: 'descuenta_iess', label: 'Descuenta IESS', type: 'boolean', defaultValue: false },

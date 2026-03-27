@@ -39,6 +39,24 @@ input,
 select {
   transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease, transform 0.12s ease;
 }
+.rol-detalle-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.rol-detalle-col {
+  min-width: 0;
+}
+
+.rol-detalle-col-title {
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+
+.rol-detalle-shortcut {
+  margin-top: 8px;
+}
 
 button:focus-visible,
 input:focus-visible,

@@ -55,10 +55,12 @@ export default function App() {
   const [viajePersonalId, setViajePersonalId] = useState('')
   const [editingGastoId, setEditingGastoId] = useState(null)
   const [editingCargaId, setEditingCargaId] = useState(null)
+  const [editingTransferenciaViaticosId, setEditingTransferenciaViaticosId] = useState(null)
   const [gastoForm, setGastoForm] = useState({ tipo_gasto: '', valor: '', observacion: '', numero_comprobante: '' })
+  const [viaticosTransferForm, setViaticosTransferForm] = useState({ banco_id: '', valor: '', comprobante: '' })
+  const [transferenciasViaticos, setTransferenciasViaticos] = useState([])
+  const [viaticosReconciliacion, setViaticosReconciliacion] = useState(null)
   const [cargaForm, setCargaForm] = useState({ producto_id: '', cantidad: '', valor_carga: '' })
-  const [viaticosRutaLargaForm, setViaticosRutaLargaForm] = useState({ banco_id: '', valor: '', comprobante: '' })
-  const [viaticosRutaLargaLista, setViaticosRutaLargaLista] = useState([])
   const [bitacoraMessage, setBitacoraMessage] = useState('')
 
   const [biometricoFile, setBiometricoFile] = useState(null)
@@ -110,7 +112,8 @@ export default function App() {
     fecha: '',
     ruta_id: '',
     camion_id: '',
-    conductor_id: ''
+    conductor_id: '',
+    tipo_ruta: ''
   })
   const [bitacoraPaginaActual, setBitacoraPaginaActual] = useState(0)
 
@@ -134,7 +137,9 @@ export default function App() {
   const [ajustesMessage, setAjustesMessage] = useState('')
 
   const [rolesPeriodoMes, setRolesPeriodoMes] = useState(new Date().toISOString().slice(0, 7))
+  const [rolesPeriodoTipo, setRolesPeriodoTipo] = useState('mensual')
   const [rolesRows, setRolesRows] = useState([])
+  const [rolesEstadoPeriodoRows, setRolesEstadoPeriodoRows] = useState([])
   const [selectedRolId, setSelectedRolId] = useState('')
   const [rolDetalle, setRolDetalle] = useState(null)
   const [rolesMessage, setRolesMessage] = useState('')
@@ -214,22 +219,6 @@ export default function App() {
   }
 
   // Función para cargar viáticos desde localStorage
-  function loadViaticosFromStorage(viajeId) {
-    if (!viajeId) return []
-    try {
-      const key = `viaticos_${viajeId}`
-      const stored = localStorage.getItem(key)
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        const result = Array.isArray(parsed) ? parsed : []
-        return result
-      }
-    } catch (err) {
-      console.error(`Error loading viaticos for viaje ${viajeId}:`, err)
-    }
-    return []
-  }
-
   useEffect(() => {
     if (token) refreshAll()
   }, [token])
@@ -275,15 +264,12 @@ export default function App() {
       setGastos([])
       setCargas([])
       setViajePersonal([])
-      // NO limpiar viaticosRutaLargaLista aquí - se mantiene en localStorage
-      setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
+      setTransferenciasViaticos([])
+      setViaticosReconciliacion(null)
+      setEditingTransferenciaViaticosId(null)
+      setViaticosTransferForm({ banco_id: '', valor: '', comprobante: '' })
       return
     }
-    
-    // Cargar viáticos desde localStorage
-    const viaticos = loadViaticosFromStorage(selectedViajeId)
-    setViaticosRutaLargaLista(viaticos)
-    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
     fetchViajeDetalles(selectedViajeId)
   }, [selectedViajeId])
 
@@ -342,8 +328,9 @@ export default function App() {
   useEffect(() => {
     if (!token) return
     if (currentView !== 'roles_mensuales') return
-    fetchRolesMensuales(rolesPeriodoMes)
-  }, [currentView, token, rolesPeriodoMes])
+    fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo)
+    fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo)
+  }, [currentView, token, rolesPeriodoMes, rolesPeriodoTipo])
 
   useEffect(() => {
     if (!token) return
@@ -540,6 +527,7 @@ export default function App() {
       if (filters.ruta_id) queryParams.append('ruta_id', filters.ruta_id);
       if (filters.camion_id) queryParams.append('camion_id', filters.camion_id);
       if (filters.conductor_id) queryParams.append('conductor_id', filters.conductor_id);
+      if (filters.tipo_ruta) queryParams.append('tipo_ruta', filters.tipo_ruta);
       
       const r = await axios.get(`${API}/viajes${queryParams.toString() ? '?' + queryParams.toString() : ''}`, { headers: authHeaders() })
       const data = r.data || []
@@ -555,14 +543,18 @@ export default function App() {
   }
 
   async function fetchViajeDetalles(viajeId) {
-    const [gastosResponse, cargaResponse, personalResponse] = await Promise.all([
+    const [gastosResponse, cargaResponse, personalResponse, transferenciasResponse, reconciliacionResponse] = await Promise.all([
       axios.get(`${API}/viajes/${viajeId}/gastos`, { headers: authHeaders() }),
       axios.get(`${API}/viajes/${viajeId}/carga`, { headers: authHeaders() }),
-      axios.get(`${API}/viajes/${viajeId}/personal`, { headers: authHeaders() })
+      axios.get(`${API}/viajes/${viajeId}/personal`, { headers: authHeaders() }),
+      axios.get(`${API}/viajes/${viajeId}/transferencias-viaticos`, { headers: authHeaders() }),
+      axios.get(`${API}/viajes/${viajeId}/transferencias-viaticos/reconciliacion`, { headers: authHeaders() })
     ])
     setGastos(gastosResponse.data || [])
     setCargas(cargaResponse.data || [])
     setViajePersonal(personalResponse.data || [])
+    setTransferenciasViaticos(transferenciasResponse.data || [])
+    setViaticosReconciliacion(reconciliacionResponse.data || null)
   }
 
   async function fetchBiometricoImports() {
@@ -881,12 +873,6 @@ export default function App() {
     try {
       setAjustesMessage('')
       await axios.delete(`${API}/ajustes-personal/${item.id}`, { headers: authHeaders() })
-      
-      // Limpiar el flag de viáticos generados si este ajuste estaba asociado a un viaje
-      if (item.viaje_id) {
-        localStorage.removeItem(`viaticos_generado_${item.viaje_id}`)
-      }
-      
       await fetchAjustesPersonal()
       if (editingAjusteId === item.id) {
         setEditingAjusteId(null)
@@ -909,9 +895,9 @@ export default function App() {
   }
 
 
-  async function fetchRolesMensuales(periodoMes = rolesPeriodoMes) {
+  async function fetchRolesMensuales(periodoMes = rolesPeriodoMes, tipoPeriodo = rolesPeriodoTipo) {
     try {
-      const query = `?periodo_mes=${encodeURIComponent(periodoMes)}`
+      const query = `?periodo_mes=${encodeURIComponent(periodoMes)}&tipo_periodo=${encodeURIComponent(tipoPeriodo)}`
       const r = await axios.get(`${API}/roles-mensuales${query}`, { headers: authHeaders() })
       const rows = r.data || []
       setRolesRows(rows)
@@ -935,6 +921,20 @@ export default function App() {
     }
   }
 
+  async function fetchRolesEstadoPeriodo(periodoMes = rolesPeriodoMes, tipoPeriodo = rolesPeriodoTipo) {
+    try {
+      const query = `?periodo_mes=${encodeURIComponent(periodoMes)}&tipo_periodo=${encodeURIComponent(tipoPeriodo)}`
+      const r = await axios.get(`${API}/roles-mensuales/estado-periodo${query}`, { headers: authHeaders() })
+      setRolesEstadoPeriodoRows(r.data || [])
+    } catch (err) {
+      if (err?.response?.status === 401) {
+        handleUnauthorizedSession()
+        return
+      }
+      setRolesEstadoPeriodoRows([])
+    }
+  }
+
   async function fetchRolMensualDetalle(rolId) {
     if (!rolId) {
       setRolDetalle(null)
@@ -950,7 +950,7 @@ export default function App() {
     }
   }
 
-  async function generarRolesMensuales() {
+  async function generarRolesMensuales(personalId = null) {
     if (!canModifyModule('roles_mensuales')) {
       setRolesMessage('No tienes permiso para modificar en Roles mensuales IESS')
       return
@@ -963,17 +963,29 @@ export default function App() {
 
     try {
       setRolesMessage('')
-      await axios.post(`${API}/roles-mensuales/generar`, { periodo_mes: rolesPeriodoMes }, { headers: authHeaders() })
-      await fetchRolesMensuales(rolesPeriodoMes)
-      setRolesMessage('Roles mensuales generados correctamente.')
+      await axios.post(
+        `${API}/roles-mensuales/generar`,
+        {
+          periodo_mes: rolesPeriodoMes,
+          tipo_periodo: rolesPeriodoTipo,
+          personal_id: personalId ? Number(personalId) : undefined
+        },
+        { headers: authHeaders() }
+      )
+      await Promise.all([
+        fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesPagoOptions()
+      ])
+      setRolesMessage(personalId ? 'Rol generado correctamente.' : 'Roles generados correctamente.')
     } catch (err) {
-      setRolesMessage(err?.response?.data?.error || 'No se pudieron generar roles mensuales')
+      setRolesMessage(err?.response?.data?.error || 'No se pudieron generar roles')
     }
   }
 
   async function eliminarRolesMensuales() {
-    if (!canModifyModule('roles_mensuales')) {
-      setRolesMessage('No tienes permiso para modificar en Roles mensuales IESS')
+    if (!canDeleteModule('roles_mensuales')) {
+      setRolesMessage('No tienes permiso para eliminar en Roles mensuales IESS')
       return
     }
 
@@ -982,16 +994,24 @@ export default function App() {
       return
     }
 
-    const confirmed = window.confirm(`?Seguro que deseas eliminar los roles mensuales del periodo ${rolesPeriodoMes}?`)
+    const etiquetaTipo = rolesPeriodoTipo === 'quincena' ? 'quincena 1' : 'mensual'
+    const confirmed = window.confirm(`¿Seguro que deseas eliminar los roles ${etiquetaTipo} del periodo ${rolesPeriodoMes}?`)
     if (!confirmed) return
 
     try {
       setRolesMessage('')
-      await axios.delete(`${API}/roles-mensuales?periodo_mes=${encodeURIComponent(rolesPeriodoMes)}`, { headers: authHeaders() })
-      await fetchRolesMensuales(rolesPeriodoMes)
-      setRolesMessage('Roles mensuales eliminados correctamente.')
+      await axios.delete(
+        `${API}/roles-mensuales?periodo_mes=${encodeURIComponent(rolesPeriodoMes)}&tipo_periodo=${encodeURIComponent(rolesPeriodoTipo)}`,
+        { headers: authHeaders() }
+      )
+      await Promise.all([
+        fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesPagoOptions()
+      ])
+      setRolesMessage('Roles eliminados correctamente.')
     } catch (err) {
-      setRolesMessage(err?.response?.data?.error || 'No se pudieron eliminar roles mensuales')
+      setRolesMessage(err?.response?.data?.error || 'No se pudieron eliminar roles')
     }
   }
 
@@ -1004,7 +1024,10 @@ export default function App() {
     try {
       setRolesMessage('')
       await axios.put(`${API}/roles-mensuales/${rolId}/estado`, { estado }, { headers: authHeaders() })
-      await fetchRolesMensuales(rolesPeriodoMes)
+      await Promise.all([
+        fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo)
+      ])
       await fetchRolMensualDetalle(rolId)
       setRolesMessage('Estado del rol actualizado.')
     } catch (err) {
@@ -1025,7 +1048,8 @@ export default function App() {
       setRolesMessage('')
       await axios.delete(`${API}/roles-mensuales/${rolId}`, { headers: authHeaders() })
       await Promise.all([
-        fetchRolesMensuales(rolesPeriodoMes),
+        fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo),
         fetchRolesPagoOptions(),
         fetchPagosRolesMensuales()
       ])
@@ -1036,6 +1060,61 @@ export default function App() {
       setRolesMessage('Rol mensual eliminado correctamente.')
     } catch (err) {
       setRolesMessage(err?.response?.data?.error || 'No se pudo eliminar el rol mensual')
+    }
+  }
+
+  async function agregarAjusteRapidoRol(tipo) {
+    if (!canModifyModule('roles_mensuales')) {
+      setRolesMessage('No tienes permiso para modificar en Roles mensuales IESS')
+      return
+    }
+
+    if (!rolDetalle?.id) {
+      setRolesMessage('Selecciona un rol para agregar ajuste.')
+      return
+    }
+
+    if (String(rolDetalle.estado || '').toLowerCase() === 'pagado') {
+      setRolesMessage('No se puede modificar un rol pagado. Elimina primero el pago.')
+      return
+    }
+
+    const label = tipo === 'sobrante' ? 'sobrante' : 'faltante'
+    const detalle = window.prompt(`Detalle del ${label}:`)
+    if (detalle === null) return
+    if (!String(detalle).trim()) {
+      setRolesMessage('El detalle es obligatorio.')
+      return
+    }
+
+    const valorRaw = window.prompt(`Valor del ${label}:`)
+    if (valorRaw === null) return
+    const valor = Number(valorRaw)
+    if (!Number.isFinite(valor) || valor <= 0) {
+      setRolesMessage('El valor debe ser numérico y mayor a 0.')
+      return
+    }
+
+    try {
+      setRolesMessage('')
+      await axios.post(
+        `${API}/roles-mensuales/${rolDetalle.id}/atajo-ajuste`,
+        { tipo, detalle: String(detalle).trim(), valor },
+        { headers: authHeaders() }
+      )
+
+      const rolId = Number(rolDetalle.id)
+      await Promise.all([
+        fetchRolMensualDetalle(rolId),
+        fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo),
+        fetchRolesPagoOptions(),
+        fetchAjustesPersonal()
+      ])
+
+      setRolesMessage(`${label === 'sobrante' ? 'Sobrante' : 'Faltante'} agregado correctamente.`)
+    } catch (err) {
+      setRolesMessage(err?.response?.data?.error || 'No se pudo agregar el ajuste rápido')
     }
   }
 
@@ -1299,6 +1378,7 @@ export default function App() {
       const rutasChoferesParams = new URLSearchParams({ desde: reporteDesde, hasta: reporteHasta })
       if (reporteChoferId) rutasChoferesParams.set('chofer_id', reporteChoferId)
       if (reporteRutaId) rutasChoferesParams.set('ruta_id', reporteRutaId)
+      if (reporteTipoRuta) rutasChoferesParams.set('tipo_ruta', reporteTipoRuta)
       const gastosViajeParams = new URLSearchParams({ desde: reporteDesde, hasta: reporteHasta })
       if (reporteCamionId) gastosViajeParams.set('camion_id', reporteCamionId)
       if (reporteChoferId) gastosViajeParams.set('chofer_id', reporteChoferId)
@@ -1759,26 +1839,40 @@ export default function App() {
       setBitacoraMessage('')
       await axios.delete(`${API}/viajes/${viaje.id}`, { headers: authHeaders() })
 
-      if (String(selectedViajeId) === String(viaje.id)) {
-        setSelectedViajeId('')
-        localStorage.removeItem('selectedViajeId')
-        setGastos([])
-        setCargas([])
-        setViajePersonal([])
-        setViaticosRutaLargaLista([])
-        // Limpiar localStorage de viáticos de este viaje
-        localStorage.removeItem(`viaticos_${viaje.id}`)
-      }
-
       if (editingViajeId === viaje.id) {
         setEditingViajeId(null)
         setViajeForm(createInitialViajeForm())
       }
 
       await fetchViajes()
-      setBitacoraMessage('Viaje eliminado correctamente.')
+      if (String(selectedViajeId) === String(viaje.id)) {
+        await fetchViajeDetalles(viaje.id)
+      }
+      setBitacoraMessage('Viaje inactivado correctamente.')
     } catch (err) {
       setBitacoraMessage(err?.response?.data?.error || 'No se pudo eliminar el viaje')
+    }
+  }
+
+  async function activateViaje(viaje) {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+
+    const confirmed = window.confirm(`¿Deseas reactivar el viaje ${viaje.viaje_id}?`)
+    if (!confirmed) return
+
+    try {
+      setBitacoraMessage('')
+      await axios.put(`${API}/viajes/${viaje.id}/activar`, {}, { headers: authHeaders() })
+      await fetchViajes()
+      if (String(selectedViajeId) === String(viaje.id)) {
+        await fetchViajeDetalles(viaje.id)
+      }
+      setBitacoraMessage('Viaje reactivado correctamente.')
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo reactivar el viaje')
     }
   }
 
@@ -1800,6 +1894,126 @@ export default function App() {
       await fetchViajeDetalles(selectedViajeId)
     } catch (err) {
       setBitacoraMessage(err?.response?.data?.error || 'No se pudo registrar gasto')
+    }
+  }
+
+  async function saveTransferenciaViaticos() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) return
+    if (!viaticosTransferForm.banco_id || !viaticosTransferForm.valor) {
+      setBitacoraMessage('Completa banco y valor de la transferencia')
+      return
+    }
+
+    try {
+      setBitacoraMessage('')
+      const payload = {
+        banco_id: Number(viaticosTransferForm.banco_id),
+        valor: Number(viaticosTransferForm.valor || 0),
+        comprobante: viaticosTransferForm.comprobante || null
+      }
+
+      if (editingTransferenciaViaticosId) {
+        await axios.put(`${API}/viajes/${selectedViajeId}/transferencias-viaticos/${editingTransferenciaViaticosId}`, payload, { headers: authHeaders() })
+      } else {
+        await axios.post(`${API}/viajes/${selectedViajeId}/transferencias-viaticos`, payload, { headers: authHeaders() })
+      }
+      setViaticosTransferForm({ banco_id: '', valor: '', comprobante: '' })
+      setEditingTransferenciaViaticosId(null)
+      await fetchViajeDetalles(selectedViajeId)
+      setBitacoraMessage(editingTransferenciaViaticosId ? 'Transferencia de viáticos actualizada correctamente.' : 'Transferencia de viáticos registrada correctamente.')
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo registrar la transferencia de viáticos')
+    }
+  }
+
+  function startEditTransferenciaViaticos(transferencia) {
+    setEditingTransferenciaViaticosId(transferencia.id)
+    setViaticosTransferForm({
+      banco_id: String(transferencia.banco_id || ''),
+      valor: String(transferencia.valor ?? ''),
+      comprobante: transferencia.comprobante || ''
+    })
+  }
+
+  async function removeTransferenciaViaticos(transferenciaId) {
+    if (!canDeleteModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para eliminar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) return
+    try {
+      await axios.delete(`${API}/viajes/${selectedViajeId}/transferencias-viaticos/${transferenciaId}`, { headers: authHeaders() })
+      if (editingTransferenciaViaticosId === transferenciaId) {
+        setEditingTransferenciaViaticosId(null)
+        setViaticosTransferForm({ banco_id: '', valor: '', comprobante: '' })
+      }
+      await fetchViajeDetalles(selectedViajeId)
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo eliminar la transferencia de viáticos')
+    }
+  }
+
+  async function registrarDiferenciaComoFaltante() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) return
+
+    const ok = window.confirm('¿Registrar la diferencia de viáticos como FALTANTE del chofer?')
+    if (!ok) return
+
+    try {
+      setBitacoraMessage('')
+      await axios.post(`${API}/viajes/${selectedViajeId}/transferencias-viaticos/reconciliacion/faltante`, {}, { headers: authHeaders() })
+      await fetchViajeDetalles(selectedViajeId)
+      setBitacoraMessage('Diferencia registrada como faltante correctamente.')
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo registrar la diferencia como faltante')
+    }
+  }
+
+  async function registrarDiferenciaComoSobrante() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) return
+
+    const ok = window.confirm('¿Registrar la diferencia de viáticos como SOBRANTE?')
+    if (!ok) return
+
+    try {
+      setBitacoraMessage('')
+      await axios.post(`${API}/viajes/${selectedViajeId}/transferencias-viaticos/reconciliacion/sobrante`, {}, { headers: authHeaders() })
+      await fetchViajeDetalles(selectedViajeId)
+      setBitacoraMessage('Diferencia registrada como sobrante correctamente.')
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo registrar la diferencia como sobrante')
+    }
+  }
+
+  async function arrastrarExcedenteASiguienteViaje() {
+    if (!canModifyModule('bitacora')) {
+      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
+      return
+    }
+    if (!selectedViajeId) return
+
+    const ok = window.confirm('¿Arrastrar el excedente al siguiente viaje del mismo chofer?')
+    if (!ok) return
+
+    try {
+      setBitacoraMessage('')
+      await axios.post(`${API}/viajes/${selectedViajeId}/transferencias-viaticos/reconciliacion/arrastrar`, {}, { headers: authHeaders() })
+      await fetchViajeDetalles(selectedViajeId)
+      setBitacoraMessage('Excedente arrastrado al siguiente viaje correctamente.')
+    } catch (err) {
+      setBitacoraMessage(err?.response?.data?.error || 'No se pudo arrastrar el excedente al siguiente viaje')
     }
   }
 
@@ -1888,111 +2102,6 @@ export default function App() {
       await fetchViajeDetalles(selectedViajeId)
     } catch (err) {
       setBitacoraMessage(err?.response?.data?.error || 'No se pudo eliminar carga')
-    }
-  }
-
-  async function generarAjusteDesdeViaticos() {
-    if (!canModifyModule('bitacora')) {
-      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
-      return
-    }
-    if (!selectedViajeId) {
-      setBitacoraMessage('Selecciona un viaje')
-      return
-    }
-    
-    // Verificar si ya fue generado
-    const yaGenerado = localStorage.getItem(`viaticos_generado_${selectedViajeId}`)
-    if (yaGenerado) {
-      setBitacoraMessage('Ya existe un ajuste generado para este viaje. Elimínalo del módulo de Sobrantes y Faltantes para generar uno nuevo.')
-      return
-    }
-    
-    if (viaticosRutaLargaLista.length === 0) {
-      setBitacoraMessage('Agrega al menos una transferencia de viáticos')
-      return
-    }
-    
-    try {
-      setBitacoraMessage('')
-      const selectedViaje = (viajes || []).find((viaje) => String(viaje.id) === String(selectedViajeId))
-      if (!selectedViaje) {
-        setBitacoraMessage('Viaje no encontrado')
-        return
-      }
-      
-      const totalGastosActual = (gastos || []).reduce((acc, item) => acc + Number(item.valor || 0), 0)
-      
-      let ajustesGenerados = []
-      for (const viatico of viaticosRutaLargaLista) {
-        if (viatico.tipo) continue // Ya fue generado
-        
-        const valorTransferencia = Number(viatico.valor || 0)
-        const diferencia = Math.abs(valorTransferencia - totalGastosActual)
-        const tipo = valorTransferencia > totalGastosActual ? 'faltante' : 'sobrante'
-        
-        const payload = {
-          viaje_id: Number(selectedViajeId),
-          banco_id: Number(viatico.banco_id || viaticosRutaLargaForm.banco_id),
-          valor_transferencia: valorTransferencia,
-          comprobante: viatico.comprobante,
-          tipo_ajuste: tipo,
-          diferencia: diferencia
-        }
-        
-        await axios.post(`${API}/viajes/${selectedViajeId}/viaticos-ajuste`, payload, { headers: authHeaders() })
-        ajustesGenerados.push({ tipo, diferencia })
-      }
-      
-      if (ajustesGenerados.length > 0) {
-        const detalles = ajustesGenerados.map((a) => `${a.tipo === 'faltante' ? 'Faltante' : 'Sobrante'}: $${a.diferencia.toFixed(2)}`).join(' | ')
-        setBitacoraMessage(`${ajustesGenerados.length} ajuste(s) generado(s): ${detalles}. Puedes verlos en el módulo de Sobrantes y Faltantes.`)
-        
-        // Marcar como generado en localStorage
-        localStorage.setItem(`viaticos_generado_${selectedViajeId}`, JSON.stringify({ generado: true, fecha: new Date().toISOString() }))
-        
-        await fetchViajeDetalles(selectedViajeId)
-        await fetchAjustesPersonal()
-      }
-    } catch (err) {
-      setBitacoraMessage(err?.response?.data?.error || 'No se pudo generar los ajustes')
-    }
-  }
-
-  function agregarViaticosRutaLarga() {
-    if (!canModifyModule('bitacora')) {
-      setBitacoraMessage('No tienes permiso para modificar en Bitacora')
-      return
-    }
-    if (!viaticosRutaLargaForm.banco_id || !viaticosRutaLargaForm.valor) {
-      setBitacoraMessage('Completa los campos de banco y valor')
-      return
-    }
-    
-    const banco = (catalogRows.bancos || []).find((b) => String(b.id) === String(viaticosRutaLargaForm.banco_id))
-    const nuevoViatico = {
-      id: Date.now(),
-      banco_id: viaticosRutaLargaForm.banco_id,
-      banco_nombre: banco?.nombre || '',
-      valor: Number(viaticosRutaLargaForm.valor),
-      comprobante: viaticosRutaLargaForm.comprobante
-    }
-    const nuevaLista = [...viaticosRutaLargaLista, nuevoViatico]
-    setViaticosRutaLargaLista(nuevaLista)
-    // Guardar en localStorage
-    if (selectedViajeId) {
-      localStorage.setItem(`viaticos_${selectedViajeId}`, JSON.stringify(nuevaLista))
-    }
-    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
-    setBitacoraMessage('Transferencia de viáticos agregada a la lista')
-  }
-
-  function removerViaticosRutaLarga(id) {
-    const nuevaLista = viaticosRutaLargaLista.filter((v) => v.id !== id)
-    setViaticosRutaLargaLista(nuevaLista)
-    // Actualizar localStorage
-    if (selectedViajeId) {
-      localStorage.setItem(`viaticos_${selectedViajeId}`, JSON.stringify(nuevaLista))
     }
   }
 
@@ -2090,8 +2199,10 @@ export default function App() {
     setViajePersonalId('')
     setEditingGastoId(null)
     setEditingCargaId(null)
-    setViaticosRutaLargaForm({ banco_id: '', valor: '', comprobante: '' })
-    setViaticosRutaLargaLista([])
+    setEditingTransferenciaViaticosId(null)
+    setViaticosTransferForm({ banco_id: '', valor: '', comprobante: '' })
+    setTransferenciasViaticos([])
+    setViaticosReconciliacion(null)
     setBiometricoImports([])
     setBiometricoMarcas([])
     setPopupErrors([])
@@ -2504,7 +2615,7 @@ export default function App() {
       if (!isAdminSelected) return null
     }
 
-    const isPersonalIessField = currentView === 'personal' && ['fecha_afiliacion_iess', 'sueldo_iess', 'sueldo_real', 'descuenta_iess', 'cobra_decimo_tercero', 'cobra_decimo_cuarto', 'cobra_fondo_reserva'].includes(field.key)
+    const isPersonalIessField = currentView === 'personal' && ['fecha_afiliacion_iess', 'modalidad_pago_iess', 'sueldo_iess', 'sueldo_real', 'descuenta_iess', 'cobra_decimo_tercero', 'cobra_decimo_cuarto', 'cobra_fondo_reserva'].includes(field.key)
     if (isPersonalIessField && !formValues.afiliado_iess) {
       return null
     }
@@ -2756,6 +2867,7 @@ export default function App() {
             <div className="form-grid">
               {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'afiliado_iess'))}
               {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'fecha_afiliacion_iess'))}
+              {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'modalidad_pago_iess'))}
               {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'sueldo_iess'))}
               {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'sueldo_real'))}
               {renderCatalogInput(CATALOGS.personal.fields.find((field) => field.key === 'descuenta_iess'))}
@@ -2872,11 +2984,14 @@ export default function App() {
     // - Rutas mixtas (cortas + largas o cualquier combinación con mixtas): mostrar ambas opciones
     const mostrarCargaRutaCorta = tieneRutasCortas || tieneRutasMixtas
     const mostrarCargaRutaLarga = tieneRutasLargas || tieneRutasMixtas
-    
-    // Para compatibilidad con código existente (viáticos, etc.)
-    const isRutaCorta = !tieneRutasLargas && !tieneRutasMixtas && tieneRutasCortas
+    const permiteTransferenciaViaticos = tieneRutasLargas || rutaTipo === 'larga'
     
     const totalGastos = (gastos || []).reduce((acc, item) => acc + Number(item.valor || 0), 0)
+    const totalTransferenciasViaticos = (transferenciasViaticos || []).reduce((acc, item) => acc + Number(item.valor || 0), 0)
+    const diferenciaViaticos = totalTransferenciasViaticos - totalGastos
+    const diferenciaPendiente = permiteTransferenciaViaticos
+      && Number(diferenciaViaticos) !== 0
+      && !viaticosReconciliacion?.ya_reconciliado
     const rutasActivas = (catalogRows.rutas || []).filter((ruta) => ruta.activo)
     const selectedRutaIds = Array.isArray(viajeForm.ruta_ids) ? viajeForm.ruta_ids.map((value) => String(value)) : []
     const selectedRutaLabels = rutasActivas
@@ -3027,10 +3142,10 @@ export default function App() {
                   type="date" 
                   value={bitacoraFiltros.fecha}
                   onChange={(e) => {
-                    setBitacoraFiltros(prev => ({ ...prev, fecha: e.target.value }))
+                    const nextFiltros = { ...bitacoraFiltros, fecha: e.target.value }
+                    setBitacoraFiltros(nextFiltros)
                     setBitacoraPaginaActual(0)
-                    if (e.target.value) fetchViajes({ ...bitacoraFiltros, fecha: e.target.value })
-                    else fetchViajes(bitacoraFiltros)
+                    fetchViajes(nextFiltros)
                   }}
                   placeholder="Filtrar por fecha"
                   aria-label="Filtrar por fecha" 
@@ -3038,10 +3153,10 @@ export default function App() {
                 <SearchableSelect
                   value={bitacoraFiltros.ruta_id}
                   onChange={(nextValue) => {
-                    setBitacoraFiltros(prev => ({ ...prev, ruta_id: nextValue }))
+                    const nextFiltros = { ...bitacoraFiltros, ruta_id: nextValue }
+                    setBitacoraFiltros(nextFiltros)
                     setBitacoraPaginaActual(0)
-                    if (nextValue) fetchViajes({ ...bitacoraFiltros, ruta_id: nextValue })
-                    else fetchViajes(bitacoraFiltros)
+                    fetchViajes(nextFiltros)
                   }}
                   placeholder="Filtrar por ruta"
                   options={(catalogRows.rutas || []).filter((r) => r.activo).map((r) => ({ value: String(r.id), label: r.nombre }))}
@@ -3049,10 +3164,10 @@ export default function App() {
                 <SearchableSelect
                   value={bitacoraFiltros.camion_id}
                   onChange={(nextValue) => {
-                    setBitacoraFiltros(prev => ({ ...prev, camion_id: nextValue }))
+                    const nextFiltros = { ...bitacoraFiltros, camion_id: nextValue }
+                    setBitacoraFiltros(nextFiltros)
                     setBitacoraPaginaActual(0)
-                    if (nextValue) fetchViajes({ ...bitacoraFiltros, camion_id: nextValue })
-                    else fetchViajes(bitacoraFiltros)
+                    fetchViajes(nextFiltros)
                   }}
                   placeholder="Filtrar por camión"
                   options={(catalogRows.camiones || []).filter((c) => c.activo).map((c) => ({ value: String(c.id), label: `${c.placa} - ${c.nombre}` }))}
@@ -3060,17 +3175,31 @@ export default function App() {
                 <SearchableSelect
                   value={bitacoraFiltros.conductor_id}
                   onChange={(nextValue) => {
-                    setBitacoraFiltros(prev => ({ ...prev, conductor_id: nextValue }))
+                    const nextFiltros = { ...bitacoraFiltros, conductor_id: nextValue }
+                    setBitacoraFiltros(nextFiltros)
                     setBitacoraPaginaActual(0)
-                    if (nextValue) fetchViajes({ ...bitacoraFiltros, conductor_id: nextValue })
-                    else fetchViajes(bitacoraFiltros)
+                    fetchViajes(nextFiltros)
                   }}
                   placeholder="Filtrar por conductor"
                   options={conductores.map((p) => ({ value: String(p.id), label: p.nombre }))}
                 />
+                <select
+                  value={bitacoraFiltros.tipo_ruta}
+                  onChange={(e) => {
+                    const nextFiltros = { ...bitacoraFiltros, tipo_ruta: e.target.value }
+                    setBitacoraFiltros(nextFiltros)
+                    setBitacoraPaginaActual(0)
+                    fetchViajes(nextFiltros)
+                  }}
+                  style={{ height: 36 }}
+                >
+                  <option value="">Tipo ruta: todos</option>
+                  <option value="corta">Ruta corta</option>
+                  <option value="larga">Ruta larga</option>
+                </select>
                 <button 
                   onClick={() => {
-                    setBitacoraFiltros({ fecha: '', ruta_id: '', camion_id: '', conductor_id: '' })
+                    setBitacoraFiltros({ fecha: '', ruta_id: '', camion_id: '', conductor_id: '', tipo_ruta: '' })
                     setBitacoraPaginaActual(0)
                     fetchViajes({})
                   }}
@@ -3124,6 +3253,7 @@ export default function App() {
                           <th>Ruta</th>
                           <th>Placa</th>
                           <th>Conductor</th>
+                          <th>Estado</th>
                           <th>KM</th>
                           <th>Accion</th>
                         </tr>
@@ -3139,10 +3269,12 @@ export default function App() {
                                   <td title={v.ruta_nombre}>{v.ruta_nombre || '-'}</td>
                                   <td>{v.placa}</td>
                                   <td>{v.conductor_nombre}</td>
+                                  <td>{v.activo === false ? 'Inactivo' : 'Activo'}</td>
                                   <td>{v.km_inicial}  a  {v.km_final}</td>
                                   <td className="table-actions">
                                     {canModifyBitacora ? <button className="small-button" onClick={() => startEditViaje(v)} title="Editar viaje" aria-label="Editar viaje"><PencilIcon /></button> : null}
-                                    {canDeleteBitacora ? <button className="small-button danger" onClick={() => removeViaje(v)} title="Eliminar viaje" aria-label="Eliminar viaje"><TrashIcon /></button> : null}
+                                    {canDeleteBitacora && v.activo !== false ? <button className="small-button danger" onClick={() => removeViaje(v)} title="Inactivar viaje" aria-label="Inactivar viaje"><TrashIcon /></button> : null}
+                                    {canModifyBitacora && v.activo === false ? <button className="small-button secondary-button" onClick={() => activateViaje(v)} title="Reactivar viaje" aria-label="Reactivar viaje">Activar</button> : null}
                                     <button
                                       className="small-button"
                                       title="Abrir detalle"
@@ -3159,7 +3291,7 @@ export default function App() {
                               ))
                           : (
                             <tr>
-                              <td colSpan="7" style={{ textAlign: 'center', padding: '1rem' }}>
+                              <td colSpan="8" style={{ textAlign: 'center', padding: '1rem' }}>
                                 No hay viajes en esta fecha
                               </td>
                             </tr>
@@ -3191,97 +3323,98 @@ export default function App() {
               )}
             </div>
 
-            {!isRutaCorta && selectedViaje ? (
-              <div className="card">
-                <h3>Transferencia de Viáticos - Ruta Larga</h3>
-                <div className="form-grid">
-                  <SearchableSelect
-                    value={viaticosRutaLargaForm.banco_id}
-                    onChange={(nextValue) => setViaticosRutaLargaForm((prev) => ({ ...prev, banco_id: nextValue }))}
-                    placeholder="Banco"
-                    options={(catalogRows.bancos || []).filter((b) => b.activo).map((b) => ({ value: String(b.id), label: b.nombre }))}
-                  />
-                  <input type="number" step="0.01" placeholder="Valor transferencia" value={viaticosRutaLargaForm.valor} onChange={(e) => setViaticosRutaLargaForm((prev) => ({ ...prev, valor: e.target.value }))} />
-                  <input placeholder="Comprobante" value={viaticosRutaLargaForm.comprobante} onChange={(e) => setViaticosRutaLargaForm((prev) => ({ ...prev, comprobante: e.target.value }))} />
-                  {canModifyBitacora ? <button onClick={agregarViaticosRutaLarga}>Agregar transferencia</button> : null}
-                </div>
-                <p className="helper-text">Total de gastos: <strong>${totalGastos.toFixed(2)}</strong></p>
-                {viaticosRutaLargaLista.length > 0 ? (
-                  <table>
-                    <thead><tr><th>Banco</th><th>Valor</th><th>Comprobante</th><th>Acciones</th></tr></thead>
-                    <tbody>
-                      {viaticosRutaLargaLista.map((v) => (
-                        <tr key={v.id}>
-                          <td>{v.banco_nombre}</td>
-                          <td>${v.valor.toFixed(2)}</td>
-                          <td>{v.comprobante || '-'}</td>
-                          <td className="table-actions">
-                            {canModifyBitacora && !v.tipo ? (
-                              <button className="small-button" onClick={() => removerViaticosRutaLarga(v.id)} title="Eliminar" aria-label="Eliminar"><TrashIcon /></button>
-                            ) : v.tipo ? (
-                              <span style={{ color: v.tipo === 'faltante' ? '#ef4444' : '#ef4444', fontWeight: 'bold' }}>
-                                {v.tipo === 'faltante' ? 'Faltante' : 'Sobrante'}: ${v.diferencia.toFixed(2)}
-                              </span>
-                            ) : (
-                              '-'
-                            )}
-                          </td>
+            <div className="card">
+              {permiteTransferenciaViaticos ? (
+                <>
+                  <h3>Transferencia de viáticos (ruta larga)</h3>
+                  <div className="form-grid">
+                    <SearchableSelect
+                      value={viaticosTransferForm.banco_id}
+                      onChange={(nextValue) => setViaticosTransferForm((prev) => ({ ...prev, banco_id: nextValue }))}
+                      placeholder="Banco"
+                      options={(catalogRows.bancos || []).filter((b) => b.activo).map((b) => ({ value: String(b.id), label: b.nombre }))}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="Valor transferencia"
+                      value={viaticosTransferForm.valor}
+                      onChange={(e) => setViaticosTransferForm((prev) => ({ ...prev, valor: e.target.value }))}
+                    />
+                    <input
+                      placeholder="Comprobante"
+                      value={viaticosTransferForm.comprobante}
+                      onChange={(e) => setViaticosTransferForm((prev) => ({ ...prev, comprobante: e.target.value }))}
+                    />
+                    {canModifyBitacora ? <button onClick={saveTransferenciaViaticos}>{editingTransferenciaViaticosId ? 'Actualizar transferencia' : 'Registrar transferencia'}</button> : null}
+                    {editingTransferenciaViaticosId && canModifyBitacora ? (
+                      <button className="secondary-button" onClick={() => { setEditingTransferenciaViaticosId(null); setViaticosTransferForm({ banco_id: '', valor: '', comprobante: '' }) }}>
+                        Cancelar edición
+                      </button>
+                    ) : null}
+                  </div>
+                  {transferenciasViaticos.length > 0 ? (
+                    <table>
+                      <thead><tr><th>Banco</th><th>Valor</th><th>Comprobante</th><th>Origen</th><th>Acciones</th></tr></thead>
+                      <tbody>
+                        {transferenciasViaticos.map((item) => (
+                          <tr key={item.id}>
+                            <td>{item.banco_nombre || '-'}</td>
+                            <td>{Number(item.valor || 0).toFixed(2)}</td>
+                            <td>{item.comprobante || '-'}</td>
+                            <td>{item.es_arrastre ? `Arrastre de viaje #${item.origen_viaje_id || '-'}` : 'Manual'}</td>
+                            <td className="table-actions">
+                              {canModifyBitacora ? <button className="small-button" onClick={() => startEditTransferenciaViaticos(item)} title="Editar" aria-label="Editar"><PencilIcon /></button> : null}
+                              {canDeleteBitacora ? <button className="small-button danger" onClick={() => removeTransferenciaViaticos(item.id)} title="Eliminar" aria-label="Eliminar"><TrashIcon /></button> : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr>
+                          <td><strong>Total transferencias</strong></td>
+                          <td><strong>{totalTransferenciasViaticos.toFixed(2)}</strong></td>
+                          <td>-</td>
+                          <td>-</td>
+                          <td>-</td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : null}
-                {viaticosRutaLargaLista.length > 0 && canModifyBitacora ? (
-                  (() => {
-                    // Verificar si al menos una transferencia tiene diferencia con los gastos
-                    const tieneDisparidad = viaticosRutaLargaLista.some((v) => {
-                      const diferencia = Math.abs(Number(v.valor || 0) - totalGastos)
-                      return diferencia > 0
-                    })
-                    
-                    return tieneDisparidad ? (
-                      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                        <button 
-                          onClick={generarAjusteDesdeViaticos}
-                          style={{
-                            flex: 1,
-                            padding: '12px 24px',
-                            backgroundColor: '#ef4444',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '15px',
-                            fontWeight: '600',
-                            cursor: 'pointer',
-                            transition: 'all 0.3s ease',
-                            boxShadow: '0 2px 8px rgba(239, 68, 68, 0.3)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '8px'
-                          }}
-                          onMouseEnter={(e) => {
-                            e.target.style.backgroundColor = '#dc2626'
-                            e.target.style.boxShadow = '0 4px 12px rgba(239, 68, 68, 0.4)'
-                            e.target.style.transform = 'translateY(-1px)'
-                          }}
-                          onMouseLeave={(e) => {
-                            e.target.style.backgroundColor = '#ef4444'
-                            e.target.style.boxShadow = '0 2px 8px rgba(239, 68, 68, 0.3)'
-                            e.target.style.transform = 'translateY(0)'
-                          }}
-                        >
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 5v14M5 12h14" />
-                          </svg>
-                          Generar ajuste de viáticos
-                        </button>
+                      </tbody>
+                    </table>
+                  ) : null}
+                  <div style={{ marginTop: '10px' }}>
+                    <p className="helper-text" style={{ marginBottom: '8px' }}>
+                      Control financiero viáticos: Transferencias <strong>{totalTransferenciasViaticos.toFixed(2)}</strong> vs Gastos <strong>{totalGastos.toFixed(2)}</strong>.
+                    </p>
+                    <p className="helper-text" style={{ marginBottom: '8px' }}>
+                      Diferencia: <strong>{diferenciaViaticos.toFixed(2)}</strong>
+                    </p>
+
+                    {viaticosReconciliacion?.ya_reconciliado ? (
+                      <p className="helper-text" style={{ marginBottom: '8px' }}>
+                        ✓ Diferencia ya resuelta como <strong>{String(viaticosReconciliacion.reconciliacion?.accion || '').toUpperCase()}</strong>.
+                      </p>
+                    ) : null}
+
+                    {diferenciaPendiente ? (
+                      <p className="helper-text" style={{ marginBottom: '8px', color: '#b42318' }}>
+                        Debes resolver esta diferencia antes de cerrar/validar el viaje.
+                      </p>
+                    ) : null}
+
+                    {diferenciaPendiente && diferenciaViaticos > 0 && canModifyBitacora ? (
+                      <div className="form-grid" style={{ marginTop: '6px' }}>
+                        <button className="secondary-button" onClick={registrarDiferenciaComoFaltante}>Registrar como FALTANTE</button>
+                        <button className="secondary-button" onClick={arrastrarExcedenteASiguienteViaje}>ARRASTRAR AL SIGUIENTE VIAJE</button>
                       </div>
-                    ) : null
-                  })()
-                ) : null}
-              </div>
-            ) : null}
+                    ) : null}
+
+                    {diferenciaPendiente && diferenciaViaticos < 0 && canModifyBitacora ? (
+                      <div className="form-grid" style={{ marginTop: '6px' }}>
+                        <button className="secondary-button" onClick={registrarDiferenciaComoSobrante}>Registrar como SOBRANTE</button>
+                      </div>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+            </div>
 
             <div className="card">
               <h3>Agregar gastos</h3>
@@ -3742,11 +3875,11 @@ export default function App() {
               options={[
                 ...(pagoRolEnEdicion ? [{
                   value: String(pagoRolEnEdicion.rol_mensual_id),
-                  label: `#${pagoRolEnEdicion.rol_mensual_id}  -  ${pagoRolEnEdicion.documento || 'SIN_DOC'}  -  ${pagoRolEnEdicion.nombre || ''} ${pagoRolEnEdicion.apellidos || ''}  -  ${pagoRolEnEdicion.periodo_mes}  -  Neto ${pagoRolEnEdicion.monto}`
+                  label: `#${pagoRolEnEdicion.rol_mensual_id}  -  ${pagoRolEnEdicion.documento || 'SIN_DOC'}  -  ${pagoRolEnEdicion.nombre || ''} ${pagoRolEnEdicion.apellidos || ''}  -  ${pagoRolEnEdicion.periodo_mes} (${String(pagoRolEnEdicion.tipo_periodo || 'mensual') === 'quincena' ? 'Q1' : 'M'})  -  Neto ${pagoRolEnEdicion.monto}`
                 }] : []),
                 ...rolesPagoOptions.map((item) => ({
                   value: String(item.id),
-                  label: `#${item.id}  -  ${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}  -  ${item.periodo_mes}  -  Neto ${item.neto_pagar}`
+                  label: `#${item.id}  -  ${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}  -  ${item.periodo_mes} (${String(item.tipo_periodo || 'mensual') === 'quincena' ? 'Q1' : 'M'})  -  Neto ${item.neto_pagar}`
                 }))
               ]}
             />
@@ -3774,7 +3907,7 @@ export default function App() {
                 Cancelar edicion
               </button>
             ) : null}
-            <button className="secondary-button" onClick={() => { fetchPagosRolesMensuales(); fetchRolesPagoOptions(); fetchRolesMensuales(rolesPeriodoMes) }} title="Actualizar datos" aria-label="Actualizar datos"><RefreshIcon /></button>
+            <button className="secondary-button" onClick={() => { fetchPagosRolesMensuales(); fetchRolesPagoOptions(); fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo) }} title="Actualizar datos" aria-label="Actualizar datos"><RefreshIcon /></button>
           </div>
         </div>
 
@@ -3857,7 +3990,7 @@ export default function App() {
               onChange={(nextValue) => setAjusteForm((prev) => ({ ...prev, frecuencia: nextValue }))}
               placeholder="Frecuencia"
               allowEmpty={false}
-              options={[{ value: 'semanal', label: 'Semanal' }, { value: 'mensual', label: 'Mensual' }]}
+              options={[{ value: 'semanal', label: 'Semanal' }, { value: 'quincenal', label: 'Quincenal' }, { value: 'mensual', label: 'Mensual' }]}
             />
             <input type="date" value={ajusteForm.fecha_inicio} onChange={(e) => setAjusteForm((prev) => ({ ...prev, fecha_inicio: e.target.value }))} />
             <SearchableSelect
@@ -3884,7 +4017,7 @@ export default function App() {
             <SearchableSelect value={ajustesFiltroPersonalId} onChange={setAjustesFiltroPersonalId} placeholder="Filtrar empleado" options={personalOptions} />
             <SearchableSelect value={ajustesFiltroTipo} onChange={setAjustesFiltroTipo} placeholder="Filtrar tipo" options={[{ value: 'sobrante', label: 'Sobrante' }, { value: 'faltante', label: 'Faltante' }]} />
             <SearchableSelect value={ajustesFiltroEstado} onChange={setAjustesFiltroEstado} placeholder="Filtrar estado" options={[{ value: 'activo', label: 'Activo' }, { value: 'pausado', label: 'Pausado' }, { value: 'cancelado', label: 'Cancelado' }, { value: 'finalizado', label: 'Finalizado' }]} />
-            <SearchableSelect value={ajustesFiltroFrecuencia} onChange={setAjustesFiltroFrecuencia} placeholder="Filtrar frecuencia" options={[{ value: 'semanal', label: 'Semanal' }, { value: 'mensual', label: 'Mensual' }]} />
+            <SearchableSelect value={ajustesFiltroFrecuencia} onChange={setAjustesFiltroFrecuencia} placeholder="Filtrar frecuencia" options={[{ value: 'semanal', label: 'Semanal' }, { value: 'quincenal', label: 'Quincenal' }, { value: 'mensual', label: 'Mensual' }]} />
           </div>
 
           <table>
@@ -3922,39 +4055,84 @@ export default function App() {
   function renderRolesMensualesView() {
     const canModifyRoles = canModifyModule('roles_mensuales')
     const canDeleteRoles = canDeleteModule('roles_mensuales')
+    const etiquetaPeriodo = rolesPeriodoTipo === 'quincena' ? 'primera quincena (1-15)' : 'mensual'
 
     return (
       <section className="view-section">
+        <div className="card bitacora-tabs-card">
+          <div className="bitacora-tabs">
+            <button className={`bitacora-tab ${rolesPeriodoTipo === 'quincena' ? 'active' : ''}`} onClick={() => setRolesPeriodoTipo('quincena')}>Quincena</button>
+            <button className={`bitacora-tab ${rolesPeriodoTipo === 'mensual' ? 'active' : ''}`} onClick={() => setRolesPeriodoTipo('mensual')}>Mensual</button>
+          </div>
+        </div>
+
         <div className="card form-card">
-          <h3>Generacion de roles mensuales (afiliados IESS)</h3>
+          <h3>Generación de roles IESS ({etiquetaPeriodo})</h3>
           <div className="form-grid">
             <input type="month" value={rolesPeriodoMes} onChange={(e) => setRolesPeriodoMes(e.target.value)} />
-            {canModifyRoles ? <button onClick={generarRolesMensuales}>Generar roles del mes</button> : null}
-            {canModifyRoles ? <button className="danger" onClick={eliminarRolesMensuales}>Borrar roles del mes</button> : null}
-            <button className="secondary-button" onClick={() => fetchRolesMensuales(rolesPeriodoMes)}>Actualizar</button>
+            {canModifyRoles ? <button onClick={() => generarRolesMensuales()}>Generar todos</button> : null}
+            {canDeleteRoles ? <button className="danger" onClick={eliminarRolesMensuales}>Borrar período</button> : null}
+            <button className="secondary-button" onClick={() => { fetchRolesMensuales(rolesPeriodoMes, rolesPeriodoTipo); fetchRolesEstadoPeriodo(rolesPeriodoMes, rolesPeriodoTipo) }}>Actualizar</button>
           </div>
           {rolesMessage ? <p className="helper-text">{rolesMessage}</p> : null}
         </div>
 
         <div className="card">
-          <h3>Roles generados</h3>
+          <h3>Estado del período</h3>
           <table>
             <thead>
-              <tr><th>Empleado</th><th>periodo</th><th>Ingresos</th><th>Egresos</th><th>Neto</th><th>Estado</th><th>Acciones</th></tr>
+              <tr><th>Empleado</th><th>Modalidad</th><th>Estado</th><th>Indicador</th><th>Acciones</th></tr>
+            </thead>
+            <tbody>
+              {paginate(rolesEstadoPeriodoRows, 'roles_estado_periodo').map((item) => (
+                <tr key={`${item.personal_id}-${item.tipo_periodo}`}>
+                  <td>{`${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}`.trim()}</td>
+                  <td>{item.modalidad_pago_iess === 'quincenal' ? 'Quincenal' : 'Mensual'}</td>
+                  <td>{item.estado}</td>
+                  <td>
+                    {item.indicador === 'completo' ? '🟢 Completo' : null}
+                    {item.indicador === 'generado' ? '🟡 Generado' : null}
+                    {item.indicador === 'pendiente' ? '🔴 Pendiente' : null}
+                  </td>
+                  <td className="table-actions">
+                    {item.rol_id ? <button className="small-button" onClick={() => { setSelectedRolId(String(item.rol_id)); fetchRolMensualDetalle(item.rol_id) }}><EyeIcon /></button> : null}
+                    {canModifyRoles && !item.rol_id ? (
+                      <button
+                        className="small-button"
+                        disabled={item.puede_generar === false}
+                        title={item.puede_generar === false ? (item.motivo_bloqueo || 'No disponible') : 'Generar'}
+                        onClick={() => generarRolesMensuales(item.personal_id)}
+                      >
+                        Generar
+                      </button>
+                    ) : null}
+                    {!item.rol_id && !canModifyRoles ? '-' : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {renderPager(rolesEstadoPeriodoRows.length, 'roles_estado_periodo')}
+        </div>
+
+        <div className="card">
+          <h3>Roles generados ({etiquetaPeriodo})</h3>
+          <table>
+            <thead>
+              <tr><th>Empleado</th><th>Periodo</th><th>Tipo</th><th>Ingresos</th><th>Egresos</th><th>Neto</th><th>Estado</th><th>Acciones</th></tr>
             </thead>
             <tbody>
               {paginate(rolesRows, 'roles_mens').map((item) => (
                 <tr key={item.id}>
                   <td>{`${item.documento || 'SIN_DOC'}  -  ${item.nombre || ''} ${item.apellidos || ''}`.trim()}</td>
                   <td>{item.periodo_mes}</td>
+                  <td>{String(item.tipo_periodo || 'mensual') === 'quincena' ? 'Quincena 1' : 'Mensual'}</td>
                   <td>{Number(item.total_ingresos || 0).toFixed(2)}</td>
                   <td>{Number(item.total_egresos || 0).toFixed(2)}</td>
                   <td>{Number(item.neto_pagar || 0).toFixed(2)}</td>
                   <td>{item.estado}</td>
                   <td className="table-actions">
                     <button className="small-button" onClick={() => { setSelectedRolId(String(item.id)); fetchRolMensualDetalle(item.id) }}><EyeIcon /></button>
-                    {canModifyRoles ? <button className="small-button" onClick={() => updateRolMensualEstado(item.id, 'aprobado')}>Aprobar</button> : null}
-                    {canModifyRoles ? <button className="small-button" onClick={() => updateRolMensualEstado(item.id, 'verificado')}>Verificar</button> : null}
                     {canDeleteRoles ? <button className="small-button danger" onClick={() => eliminarRolMensual(item.id)}>Eliminar</button> : null}
                   </td>
                 </tr>
@@ -3969,32 +4147,99 @@ export default function App() {
           {!rolDetalle ? <p className="helper-text">Selecciona un rol para ver el detalle.</p> : (
             <>
               <p className="helper-text">Empleado: {`${rolDetalle.documento || 'SIN_DOC'}  -  ${rolDetalle.nombre || ''} ${rolDetalle.apellidos || ''}`.trim()}  -  Estado: {rolDetalle.estado}</p>
-              <table>
-                <thead><tr><th>Seccion</th><th>Concepto</th><th>Valor</th></tr></thead>
-                <tbody>
-                  {(rolDetalle.detalle || []).map((item) => (
-                    <tr key={item.id}><td>{item.seccion}</td><td>{item.concepto}</td><td>{Number(item.valor || 0).toFixed(2)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-              {(rolDetalle.ajustes || []).length > 0 ? (
-                <>
-                  <h4 style={{ marginTop: 16, marginBottom: 6 }}>Sobrantes / Faltantes aplicados</h4>
-                  <table>
-                    <thead><tr><th>Tipo</th><th>Detalle</th><th>Cuota</th><th>Monto</th></tr></thead>
-                    <tbody>
-                      {(rolDetalle.ajustes || []).map((aj) => (
-                        <tr key={aj.id}>
-                          <td>{aj.tipo}</td>
-                          <td>{aj.detalle || '-'}</td>
-                          <td>{aj.cantidad_cuotas > 1 ? `${aj.cuota_actual} / ${aj.cantidad_cuotas}` : '-'}</td>
-                          <td>{Number(aj.monto || 0).toFixed(2)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </>
-              ) : null}
+              {(() => {
+                const detalle = rolDetalle.detalle || []
+                const ajustes = rolDetalle.ajustes || []
+                const existeEnDetalle = (seccion, detalleAjuste, montoAjuste) => {
+                  const detalleNorm = String(detalleAjuste || '').trim().toLowerCase()
+                  const montoNorm = Number(montoAjuste || 0).toFixed(2)
+                  return detalle.some((item) => (
+                    String(item.seccion || '').toLowerCase() === seccion &&
+                    Number(item.valor || 0).toFixed(2) === montoNorm &&
+                    (!detalleNorm || String(item.concepto || '').toLowerCase().includes(detalleNorm))
+                  ))
+                }
+                const ingresos = [
+                  ...detalle.filter((item) => String(item.seccion || '').toLowerCase() === 'ingresos').map((item) => ({
+                    id: `det-${item.id}`,
+                    concepto: item.concepto,
+                    valor: Number(item.valor || 0)
+                  })),
+                  ...ajustes
+                    .filter((aj) => String(aj.tipo || '').toLowerCase() === 'sobrante')
+                    .filter((aj) => !existeEnDetalle('ingresos', aj.detalle, aj.monto))
+                    .map((aj) => ({
+                      id: `aj-${aj.id}`,
+                      concepto: aj.detalle ? `Sobrante mensual: ${aj.detalle}` : 'Sobrante mensual',
+                      valor: Number(aj.monto || 0)
+                    }))
+                ]
+
+                const egresos = [
+                  ...detalle.filter((item) => String(item.seccion || '').toLowerCase() === 'egresos').map((item) => ({
+                    id: `det-${item.id}`,
+                    concepto: item.concepto,
+                    valor: Number(item.valor || 0)
+                  })),
+                  ...ajustes
+                    .filter((aj) => String(aj.tipo || '').toLowerCase() === 'faltante')
+                    .filter((aj) => !existeEnDetalle('egresos', aj.detalle, aj.monto))
+                    .map((aj) => ({
+                      id: `aj-${aj.id}`,
+                      concepto: aj.detalle ? `Faltante mensual: ${aj.detalle}` : 'Faltante mensual',
+                      valor: Number(aj.monto || 0)
+                    }))
+                ]
+                const totalIngresos = ingresos.reduce((acc, item) => acc + Number(item.valor || 0), 0)
+                const totalEgresos = egresos.reduce((acc, item) => acc + Number(item.valor || 0), 0)
+
+                return (
+                  <div className="rol-detalle-columns">
+                    <div className="rol-detalle-col">
+                      <h4 className="rol-detalle-col-title">Ingresos</h4>
+                      <table>
+                        <thead><tr><th>Concepto</th><th>Valor</th></tr></thead>
+                        <tbody>
+                          {ingresos.length === 0 ? <tr><td colSpan={2}>Sin ingresos</td></tr> : null}
+                          {ingresos.map((item) => (
+                            <tr key={item.id}><td>{item.concepto}</td><td>{Number(item.valor || 0).toFixed(2)}</td></tr>
+                          ))}
+                          <tr>
+                            <td><strong>Total ingresos</strong></td>
+                            <td><strong>{Number(totalIngresos || 0).toFixed(2)}</strong></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      {canModifyRoles ? (
+                        <div className="rol-detalle-shortcut">
+                          <button className="small-button" onClick={() => agregarAjusteRapidoRol('sobrante')}>+ Agregar sobrante</button>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rol-detalle-col">
+                      <h4 className="rol-detalle-col-title">Egresos</h4>
+                      <table>
+                        <thead><tr><th>Concepto</th><th>Valor</th></tr></thead>
+                        <tbody>
+                          {egresos.length === 0 ? <tr><td colSpan={2}>Sin egresos</td></tr> : null}
+                          {egresos.map((item) => (
+                            <tr key={item.id}><td>{item.concepto}</td><td>{Number(item.valor || 0).toFixed(2)}</td></tr>
+                          ))}
+                          <tr>
+                            <td><strong>Total egresos</strong></td>
+                            <td><strong>{Number(totalEgresos || 0).toFixed(2)}</strong></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      {canModifyRoles ? (
+                        <div className="rol-detalle-shortcut">
+                          <button className="small-button" onClick={() => agregarAjusteRapidoRol('faltante')}>+ Agregar faltante</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })()}
             </>
           )}
         </div>
@@ -4048,8 +4293,8 @@ export default function App() {
             />
             <select value={reporteTipoRuta} onChange={(e) => setReporteTipoRuta(e.target.value)} style={{ height: 36 }}>
               <option value="">Tipo ruta: todos</option>
-              <option value="corto">Ruta corta</option>
-              <option value="largo">Ruta larga</option>
+              <option value="corta">Ruta corta</option>
+              <option value="larga">Ruta larga</option>
             </select>
             <button onClick={cargarReportes}>Consultar reportes</button>
             <button className="secondary-button" onClick={() => { setReporteCamionId(''); setReporteChoferId(''); setReporteRutaId(''); setReporteTipoRuta('') }}>Limpiar filtros</button>

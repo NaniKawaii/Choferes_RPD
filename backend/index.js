@@ -485,6 +485,63 @@ function paidWeekMessage(paidWeek) {
   return `semana pagada (${String(paidWeek.semana_inicio).slice(0, 10)} a ${String(paidWeek.semana_fin).slice(0, 10)})`;
 }
 
+async function viajeTieneRutaLarga(viajeId, queryable = db) {
+  const result = await queryable.query(
+    `WITH rutas_viaje AS (
+       SELECT v.ruta_id
+       FROM viajes v
+       WHERE v.id = $1
+       UNION
+       SELECT vr.ruta_id
+       FROM viajes_rutas vr
+       WHERE vr.viaje_id = $1
+     )
+     SELECT 1
+     FROM rutas_viaje rv
+     JOIN rutas r ON r.id = rv.ruta_id
+     WHERE LOWER(COALESCE(r.tipo, '')) = 'larga'
+     LIMIT 1`,
+    [Number(viajeId)]
+  );
+
+  return result.rowCount > 0;
+}
+
+// Calcula el estado de reconciliación de viáticos de un viaje
+async function calcularReconciliacionViaticos(viajeId, queryable = db) {
+  const [trans, gas, recon] = await Promise.all([
+    queryable.query(
+      'SELECT COALESCE(SUM(valor), 0)::numeric AS total FROM viaje_transferencias_viaticos WHERE viaje_id = $1',
+      [Number(viajeId)]
+    ),
+    queryable.query(
+      'SELECT COALESCE(SUM(valor), 0)::numeric AS total FROM viaje_gastos WHERE viaje_ref_id = $1',
+      [Number(viajeId)]
+    ),
+    queryable.query(
+      `SELECT id, accion, valor_diferencia, ajuste_personal_id, viaje_destino_id,
+              transferencia_destino_id, comprobante_origen, created_at
+       FROM viaje_reconciliaciones_viaticos WHERE viaje_id = $1`,
+      [Number(viajeId)]
+    )
+  ]);
+
+  const total_transferencias = Number(trans.rows[0].total);
+  const total_gastos = Number(gas.rows[0].total);
+  const diferencia = total_transferencias - total_gastos;
+  const ya_reconciliado = recon.rowCount > 0;
+  const tiene_ruta_larga = await viajeTieneRutaLarga(viajeId, queryable);
+
+  return {
+    total_transferencias,
+    total_gastos,
+    diferencia,
+    ya_reconciliado,
+    tiene_ruta_larga,
+    reconciliacion: ya_reconciliado ? recon.rows[0] : null
+  };
+}
+
 async function isViajeLocked(viajeId) {
   const paidByDetalle = await db.query(
     `SELECT l.semana_inicio, l.semana_fin
@@ -527,6 +584,44 @@ async function isViajeLocked(viajeId) {
   const estado = String(r.rows[0].nombre || '').trim().toLowerCase();
   const locked = estado === 'liquidado' || estado === 'pagado';
   return { exists: true, locked, estado: r.rows[0].nombre };
+}
+
+async function getAjusteRolesLockInfo(ajusteId) {
+  const r = await db.query(
+    `SELECT rm.id AS rol_id,
+            LOWER(COALESCE(rm.tipo_periodo, 'mensual')) AS tipo_periodo,
+            LOWER(COALESCE(rm.estado, 'borrador')) AS rol_estado,
+            prm.id AS pago_id
+     FROM rol_ajustes_detalle rad
+     JOIN roles_mensuales rm ON rm.id = rad.rol_mensual_id
+     LEFT JOIN pagos_roles_mensuales prm ON prm.rol_mensual_id = rm.id
+     WHERE rad.ajuste_id = $1
+       AND LOWER(COALESCE(rm.tipo_periodo, 'mensual')) IN ('quincena', 'mensual')
+     ORDER BY rm.id DESC`,
+    [Number(ajusteId)]
+  );
+
+  if (r.rowCount === 0) {
+    return { locked: false, hasPaidRole: false, roles: [] };
+  }
+
+  const roles = r.rows.map((row) => ({
+    rol_id: Number(row.rol_id),
+    tipo_periodo: String(row.tipo_periodo || 'mensual'),
+    rol_estado: String(row.rol_estado || 'borrador'),
+    pago_id: row.pago_id ? Number(row.pago_id) : null
+  }));
+
+  const hasPaidRole = roles.some((row) => row.pago_id || row.rol_estado === 'pagado');
+  return { locked: true, hasPaidRole, roles };
+}
+
+function getAjusteRolesLockMessage(lockInfo) {
+  if (!lockInfo?.locked) return null;
+  if (lockInfo.hasPaidRole) {
+    return 'No se puede modificar este ajuste: tiene roles quincena/mensual pagados. Primero elimina el pago, luego elimina el rol y despues edita/pausa/cancela/elimina el ajuste.';
+  }
+  return 'No se puede modificar este ajuste: ya fue usado en una quincena o mensual generada. Primero elimina la quincena/mensual generada y luego edita/pausa/cancela/elimina el ajuste.';
 }
 
 async function validatePhase1ForTrips() {
@@ -793,6 +888,7 @@ async function getPersonalCatalogRows() {
     `SELECT p.id, p.nombre, p.apellidos, p.documento, p.banco_id, p.numero_cuenta, 
             p.celular, p.direccion, p.correo, p.user_id,
             p.afiliado_iess, p.fecha_afiliacion_iess, p.sueldo_iess, p.sueldo_real,
+          p.modalidad_pago_iess,
             p.descuenta_iess, p.cobra_decimo_tercero, p.cobra_decimo_cuarto, p.cobra_fondo_reserva,
             u.email,
             p.activo, p.created_at,
@@ -816,6 +912,7 @@ async function getPersonalCatalogRowById(id) {
     `SELECT p.id, p.nombre, p.apellidos, p.documento, p.banco_id, p.numero_cuenta,
             p.celular, p.direccion, p.correo, p.user_id,
             p.afiliado_iess, p.fecha_afiliacion_iess, p.sueldo_iess, p.sueldo_real,
+          p.modalidad_pago_iess,
             p.descuenta_iess, p.cobra_decimo_tercero, p.cobra_decimo_cuarto, p.cobra_fondo_reserva,
             u.email,
             p.activo, p.created_at,
@@ -1413,6 +1510,13 @@ app.post('/api/catalogs/:catalog', authMiddleware, requireModulePermission('base
         return res.status(400).json({ error: 'debe seleccionar al menos un rol' });
       }
 
+      if (hasValue(req.body.modalidad_pago_iess)) {
+        const modalidad = String(req.body.modalidad_pago_iess).trim().toLowerCase();
+        if (!['mensual', 'quincenal'].includes(modalidad)) {
+          return res.status(400).json({ error: 'modalidad_pago_iess invalida (mensual o quincenal)' });
+        }
+      }
+
       const validRoleIds = await validateRoleIds(roleIds);
       if (validRoleIds.length !== roleIds.length) {
         return res.status(400).json({ error: 'uno o mas roles son invalidos o inactivos' });
@@ -1443,10 +1547,11 @@ app.post('/api/catalogs/:catalog', authMiddleware, requireModulePermission('base
           nombre, apellidos, documento, banco_id, numero_cuenta,
           celular, direccion, correo,
           afiliado_iess, fecha_afiliacion_iess, sueldo_iess, sueldo_real,
+          modalidad_pago_iess,
           descuenta_iess, cobra_decimo_tercero, cobra_decimo_cuarto, cobra_fondo_reserva,
           user_id, activo
         )
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING id`,
         [
           req.body.nombre,
@@ -1461,6 +1566,7 @@ app.post('/api/catalogs/:catalog', authMiddleware, requireModulePermission('base
           hasValue(req.body.fecha_afiliacion_iess) ? String(req.body.fecha_afiliacion_iess) : null,
           hasValue(req.body.sueldo_iess) ? Number(req.body.sueldo_iess) : null,
           hasValue(req.body.sueldo_real) ? Number(req.body.sueldo_real) : null,
+          hasValue(req.body.modalidad_pago_iess) ? String(req.body.modalidad_pago_iess).toLowerCase() : 'mensual',
           req.body.descuenta_iess === true,
           req.body.cobra_decimo_tercero === true,
           req.body.cobra_decimo_cuarto === true,
@@ -1565,6 +1671,7 @@ app.put('/api/catalogs/:catalog/:id', authMiddleware, requireModulePermission('b
         'nombre', 'apellidos', 'documento', 'banco_id', 'numero_cuenta',
         'celular', 'direccion', 'correo',
         'afiliado_iess', 'fecha_afiliacion_iess', 'sueldo_iess', 'sueldo_real',
+        'modalidad_pago_iess',
         'descuenta_iess', 'cobra_decimo_tercero', 'cobra_decimo_cuarto', 'cobra_fondo_reserva',
         'activo'
       ].filter((field) => req.body[field] !== undefined);
@@ -1574,6 +1681,7 @@ app.put('/api/catalogs/:catalog/:id', authMiddleware, requireModulePermission('b
           if (field === 'banco_id') return hasValue(req.body[field]) ? Number(req.body[field]) : null;
           if (field === 'sueldo_iess' || field === 'sueldo_real') return hasValue(req.body[field]) ? Number(req.body[field]) : null;
           if (field === 'fecha_afiliacion_iess') return hasValue(req.body[field]) ? String(req.body[field]) : null;
+          if (field === 'modalidad_pago_iess') return hasValue(req.body[field]) ? String(req.body[field]).toLowerCase() : 'mensual';
           if (
             field === 'afiliado_iess' ||
             field === 'descuenta_iess' ||
@@ -1596,6 +1704,14 @@ app.put('/api/catalogs/:catalog/:id', authMiddleware, requireModulePermission('b
 
       const hasRolePayload = Array.isArray(req.body.personal_role_ids) || req.body.personal_role_id !== undefined;
       let finalRoleIds = [];
+
+      if (hasValue(req.body.modalidad_pago_iess)) {
+        const modalidad = String(req.body.modalidad_pago_iess).trim().toLowerCase();
+        if (!['mensual', 'quincenal'].includes(modalidad)) {
+          return res.status(400).json({ error: 'modalidad_pago_iess invalida (mensual o quincenal)' });
+        }
+      }
+
       if (hasRolePayload) {
         const roleIds = extractRoleIdsFromPayload(req.body);
         if (roleIds.length === 0) {
@@ -2303,14 +2419,6 @@ app.post('/api/liquidaciones/generar', authMiddleware, requireModulePermission('
             'UPDATE ajustes_personal SET cuota_actual = $1 WHERE id = $2',
             [ajuste.cuota_numero, ajuste.ajuste_id]
           );
-
-          // Si no es en cuotas (aplicación única) o es la última cuota, marcar como finalizado
-          if (!ajuste.en_cuotas || (ajuste.en_cuotas && ajuste.cuota_numero >= ajuste.cantidad_cuotas)) {
-            await client.query(
-              'UPDATE ajustes_personal SET estado = $1 WHERE id = $2',
-              ['finalizado', ajuste.ajuste_id]
-            );
-          }
         }
       }
     }
@@ -2442,7 +2550,7 @@ app.delete('/api/liquidaciones', authMiddleware, requireModulePermission('liquid
         `UPDATE ajustes_personal
          SET cuota_actual = cuota_actual - 1,
              estado = CASE 
-               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+               WHEN estado = 'finalizado' THEN 'activo'
                ELSE estado
              END
          WHERE id = $1`,
@@ -2607,13 +2715,18 @@ app.post('/api/ajustes-personal', authMiddleware, requireModulePermission('ajust
     const personalExists = await db.query('SELECT id FROM personal WHERE id=$1', [Number(personal_id)]);
     if (personalExists.rowCount === 0) return res.status(404).json({ error: 'personal no encontrado' });
 
+    const frecuenciaNormalizada = String(frecuencia || '').trim().toLowerCase();
+    if (!['semanal', 'quincenal', 'mensual'].includes(frecuenciaNormalizada)) {
+      return res.status(400).json({ error: 'frecuencia invalida (semanal, quincenal o mensual)' });
+    }
+
     const cuotas = en_cuotas === true ? Number(cantidad_cuotas || 1) : 1;
 
     const result = await db.query(
       `INSERT INTO ajustes_personal(personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, frecuencia, fecha_inicio, estado, created_by)
        VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, cuota_actual, frecuencia, fecha_inicio, estado, created_at`,
-      [Number(personal_id), tipo, detalle, Number(valor_total), en_cuotas === true, cuotas, frecuencia, fecha_inicio, estado || 'activo', req.user.id]
+      [Number(personal_id), tipo, detalle, Number(valor_total), en_cuotas === true, cuotas, frecuenciaNormalizada, fecha_inicio, estado || 'activo', req.user.id]
     );
 
     await auditLog(req.user.id, 'ajustes_personal', result.rows[0].id, 'create', result.rows[0]);
@@ -2632,9 +2745,22 @@ app.put('/api/ajustes-personal/:id', authMiddleware, requireModulePermission('aj
     const exists = await db.query('SELECT id FROM ajustes_personal WHERE id=$1', [id]);
     if (exists.rowCount === 0) return res.status(404).json({ error: 'ajuste no encontrado' });
 
+    const lockInfo = await getAjusteRolesLockInfo(id);
+    if (lockInfo.locked) {
+      return res.status(409).json({ error: getAjusteRolesLockMessage(lockInfo) });
+    }
+
     if (hasValue(personal_id)) {
       const personalExists = await db.query('SELECT id FROM personal WHERE id=$1', [Number(personal_id)]);
       if (personalExists.rowCount === 0) return res.status(404).json({ error: 'personal no encontrado' });
+    }
+
+    let frecuenciaNormalizada = null;
+    if (hasValue(frecuencia)) {
+      frecuenciaNormalizada = String(frecuencia).trim().toLowerCase();
+      if (!['semanal', 'quincenal', 'mensual'].includes(frecuenciaNormalizada)) {
+        return res.status(400).json({ error: 'frecuencia invalida (semanal, quincenal o mensual)' });
+      }
     }
 
     const cuotas = en_cuotas === true ? Number(cantidad_cuotas || 1) : 1;
@@ -2660,7 +2786,7 @@ app.put('/api/ajustes-personal/:id', authMiddleware, requireModulePermission('aj
         hasValue(valor_total) ? Number(valor_total) : null,
         hasValue(en_cuotas) ? (en_cuotas === true) : null,
         hasValue(cantidad_cuotas) ? cuotas : null,
-        hasValue(frecuencia) ? frecuencia : null,
+        frecuenciaNormalizada,
         hasValue(fecha_inicio) ? fecha_inicio : null,
         hasValue(estado) ? estado : null,
         id
@@ -2685,6 +2811,11 @@ app.put('/api/ajustes-personal/:id/estado', authMiddleware, requireModulePermiss
     const exists = await db.query('SELECT id FROM ajustes_personal WHERE id=$1', [id]);
     if (exists.rowCount === 0) return res.status(404).json({ error: 'ajuste no encontrado' });
 
+    const lockInfo = await getAjusteRolesLockInfo(id);
+    if (lockInfo.locked) {
+      return res.status(409).json({ error: getAjusteRolesLockMessage(lockInfo) });
+    }
+
     const result = await db.query(
       `UPDATE ajustes_personal
        SET estado = $1, updated_at = now()
@@ -2707,6 +2838,11 @@ app.delete('/api/ajustes-personal/:id', authMiddleware, requireModulePermission(
 
     const exists = await db.query('SELECT id FROM ajustes_personal WHERE id=$1', [id]);
     if (exists.rowCount === 0) return res.status(404).json({ error: 'ajuste no encontrado' });
+
+    const lockInfo = await getAjusteRolesLockInfo(id);
+    if (lockInfo.locked) {
+      return res.status(409).json({ error: getAjusteRolesLockMessage(lockInfo) });
+    }
 
     await db.query('DELETE FROM ajustes_personal WHERE id=$1', [id]);
 
@@ -2784,6 +2920,18 @@ app.post('/api/pagos', authMiddleware, requireModulePermission('pagos', 'can_mod
       `UPDATE liquidaciones
        SET estado='pagado'
        WHERE id=$1`,
+      [Number(liquidacion_id)]
+    );
+
+    await client.query(
+      `UPDATE ajustes_personal ap
+       SET estado = 'finalizado'
+       WHERE ap.id IN (
+         SELECT DISTINCT lad.ajuste_id
+         FROM liquidacion_ajustes_detalle lad
+         WHERE lad.liquidacion_id = $1
+       )
+         AND (ap.en_cuotas = FALSE OR ap.cuota_actual >= ap.cantidad_cuotas)`,
       [Number(liquidacion_id)]
     );
 
@@ -2906,6 +3054,18 @@ app.delete('/api/pagos/:id', authMiddleware, requireModulePermission('pagos', 'c
       [liquidacionId]
     );
 
+    await client.query(
+      `UPDATE ajustes_personal ap
+       SET estado = 'activo'
+       WHERE ap.estado = 'finalizado'
+         AND ap.id IN (
+           SELECT DISTINCT lad.ajuste_id
+           FROM liquidacion_ajustes_detalle lad
+           WHERE lad.liquidacion_id = $1
+         )`,
+      [liquidacionId]
+    );
+
     const estadoLiquidadoId = await getEstadoIdByName('liquidado');
     if (estadoLiquidadoId) {
       await client.query(
@@ -2939,27 +3099,133 @@ app.delete('/api/pagos/:id', authMiddleware, requireModulePermission('pagos', 'c
 // Roles mensuales IESS
 app.get('/api/roles-mensuales', authMiddleware, requireModulePermission('roles_mensuales', 'can_access'), async (req, res) => {
   try {
-    const { periodo_mes } = req.query;
+    const { periodo_mes, tipo_periodo } = req.query;
+    const tipoPeriodo = hasValue(tipo_periodo) ? String(tipo_periodo).trim().toLowerCase() : null;
+    if (tipoPeriodo && !['mensual', 'quincena'].includes(tipoPeriodo)) {
+      return res.status(400).json({ error: 'tipo_periodo invalido (mensual o quincena)' });
+    }
     
     let query = `
       SELECT rm.id, rm.periodo_mes, rm.periodo_inicio, rm.periodo_fin,
              rm.personal_id, p.nombre, p.apellidos, p.documento,
+             p.modalidad_pago_iess,
+             rm.tipo_periodo, rm.rol_quincena_ref_id,
              rm.estado, rm.total_ingresos, rm.total_egresos, rm.neto_pagar,
              rm.created_at, rm.updated_at
       FROM roles_mensuales rm
       JOIN personal p ON p.id = rm.personal_id
     `;
     const params = [];
-    
+    const where = [];
+
     if (periodo_mes) {
-      query += ' WHERE rm.periodo_mes = $1';
+      where.push(`rm.periodo_mes = $${params.length + 1}`);
       params.push(periodo_mes);
+    }
+
+    if (tipoPeriodo) {
+      where.push(`LOWER(COALESCE(rm.tipo_periodo, 'mensual')) = $${params.length + 1}`);
+      params.push(tipoPeriodo);
+    }
+
+    if (where.length > 0) {
+      query += ` WHERE ${where.join(' AND ')}`;
     }
     
     query += ' ORDER BY rm.id DESC';
     
     const r = await db.query(query, params);
     res.json(r.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/roles-mensuales/estado-periodo', authMiddleware, requireModulePermission('roles_mensuales', 'can_access'), async (req, res) => {
+  try {
+    const { periodo_mes, tipo_periodo } = req.query;
+    if (!periodo_mes || !/^\d{4}-\d{2}$/.test(String(periodo_mes))) {
+      return res.status(400).json({ error: 'periodo_mes debe tener formato YYYY-MM' });
+    }
+
+    const tipoPeriodo = hasValue(tipo_periodo) ? String(tipo_periodo).trim().toLowerCase() : 'mensual';
+    if (!['mensual', 'quincena'].includes(tipoPeriodo)) {
+      return res.status(400).json({ error: 'tipo_periodo invalido (mensual o quincena)' });
+    }
+
+    const rows = await db.query(
+      `SELECT p.id AS personal_id, p.documento, p.nombre, p.apellidos,
+              COALESCE(p.modalidad_pago_iess, 'mensual') AS modalidad_pago_iess,
+              r.id AS rol_id,
+              r.estado AS rol_estado,
+              r.total_ingresos, r.total_egresos, r.neto_pagar,
+              q.id AS rol_quincena_id,
+              q.estado AS rol_quincena_estado
+       FROM personal p
+       LEFT JOIN roles_mensuales r
+         ON r.personal_id = p.id
+        AND r.periodo_mes = $1
+        AND LOWER(COALESCE(r.tipo_periodo, 'mensual')) = $2
+       LEFT JOIN roles_mensuales q
+         ON q.personal_id = p.id
+        AND q.periodo_mes = $1
+        AND LOWER(COALESCE(q.tipo_periodo, 'mensual')) = 'quincena'
+       WHERE p.afiliado_iess = TRUE
+         AND p.activo = TRUE
+       ORDER BY p.nombre ASC, p.apellidos ASC`,
+      [String(periodo_mes), tipoPeriodo]
+    );
+
+    const payload = rows.rows
+      .filter((row) => {
+        const mod = String(row.modalidad_pago_iess || 'mensual').toLowerCase();
+        if (tipoPeriodo === 'quincena') return mod === 'quincenal';
+        return true; // mensual tab shows mensual + quincenal
+      })
+      .map((row) => {
+        const rolEstado = String(row.rol_estado || '').toLowerCase();
+        const modalidad = String(row.modalidad_pago_iess || 'mensual').toLowerCase();
+        const quincenaEstado = String(row.rol_quincena_estado || '').toLowerCase();
+        const quincenaPagada = !!row.rol_quincena_id && quincenaEstado === 'pagado';
+
+        let indicador = 'pendiente';
+        if (row.rol_id && rolEstado === 'pagado') indicador = 'completo';
+        else if (row.rol_id) indicador = 'generado';
+
+        let puede_generar = !row.rol_id;
+        let motivo_bloqueo = null;
+
+        if (tipoPeriodo === 'mensual' && modalidad === 'quincenal' && !quincenaPagada) {
+          puede_generar = false;
+          indicador = row.rol_quincena_id ? 'parcial' : 'pendiente';
+          motivo_bloqueo = row.rol_quincena_id
+            ? 'Debe pagar la quincena antes de generar el mensual.'
+            : 'Debe generar y pagar la quincena antes de generar el mensual.';
+        }
+
+        return {
+          personal_id: Number(row.personal_id),
+          documento: row.documento,
+          nombre: row.nombre,
+          apellidos: row.apellidos,
+          modalidad_pago_iess: modalidad,
+          periodo_mes: String(periodo_mes),
+          tipo_periodo: tipoPeriodo,
+          rol_id: row.rol_id ? Number(row.rol_id) : null,
+          estado: row.rol_id ? row.rol_estado : 'pendiente',
+          total_ingresos: Number(row.total_ingresos || 0),
+          total_egresos: Number(row.total_egresos || 0),
+          neto_pagar: Number(row.neto_pagar || 0),
+          rol_quincena_id: row.rol_quincena_id ? Number(row.rol_quincena_id) : null,
+          rol_quincena_estado: row.rol_quincena_estado || null,
+          indicador,
+          puede_generar,
+          motivo_bloqueo
+        };
+      });
+
+    res.json(payload);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'server error' });
@@ -3009,9 +3275,153 @@ app.get('/api/roles-mensuales/:id/detalle', authMiddleware, requireModulePermiss
   }
 });
 
+app.post('/api/roles-mensuales/:id/atajo-ajuste', authMiddleware, requireModulePermission('roles_mensuales', 'can_modify'), async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const rolId = Number(req.params.id);
+    const tipo = String(req.body?.tipo || '').trim().toLowerCase();
+    const detalle = String(req.body?.detalle || '').trim();
+    const valor = Number(req.body?.valor);
+
+    if (!['sobrante', 'faltante'].includes(tipo)) {
+      return res.status(400).json({ error: 'tipo invalido (sobrante o faltante)' });
+    }
+    if (!detalle) {
+      return res.status(400).json({ error: 'detalle es obligatorio' });
+    }
+    if (!Number.isFinite(valor) || valor <= 0) {
+      return res.status(400).json({ error: 'valor invalido' });
+    }
+
+    await client.query('BEGIN');
+
+    const rol = await client.query(
+      `SELECT rm.id, rm.personal_id, rm.periodo_inicio, rm.periodo_fin, rm.estado,
+              LOWER(COALESCE(rm.tipo_periodo, 'mensual')) AS tipo_periodo
+       FROM roles_mensuales rm
+       WHERE rm.id = $1
+       FOR UPDATE`,
+      [rolId]
+    );
+
+    if (rol.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'rol mensual no encontrado' });
+    }
+
+    const rolRow = rol.rows[0];
+
+    const pago = await client.query(
+      'SELECT id FROM pagos_roles_mensuales WHERE rol_mensual_id = $1 LIMIT 1',
+      [rolId]
+    );
+
+    if (String(rolRow.estado || '').toLowerCase() === 'pagado' || pago.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'No se puede modificar un rol pagado. Elimina primero el pago.' });
+    }
+
+    const frecuencia = rolRow.tipo_periodo === 'quincena' ? 'quincenal' : 'mensual';
+    const referenciaTipo = rolRow.tipo_periodo === 'quincena' ? 'rol_quincena' : 'rol_mensual';
+    const seccion = tipo === 'sobrante' ? 'ingresos' : 'egresos';
+    const concepto = `${tipo === 'sobrante' ? 'Sobrante' : 'Faltante'} (atajo): ${detalle}`;
+
+    const ajuste = await client.query(
+      `INSERT INTO ajustes_personal(
+        personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas,
+        frecuencia, fecha_inicio, estado, created_by
+      ) VALUES($1,$2,$3,$4,FALSE,1,$5,CURRENT_DATE,'activo',$6)
+      RETURNING id, personal_id, tipo, detalle, valor_total, frecuencia, fecha_inicio, estado`,
+      [Number(rolRow.personal_id), tipo, detalle, valor, frecuencia, req.user.id]
+    );
+
+    const aplicacion = await client.query(
+      `INSERT INTO ajustes_aplicaciones(
+        ajuste_id, personal_id, referencia_tipo, referencia_inicio, referencia_fin,
+        cuota_numero, monto_aplicado, created_by
+      ) VALUES($1,$2,$3,$4,$5,1,$6,$7)
+      RETURNING id`,
+      [
+        Number(ajuste.rows[0].id),
+        Number(rolRow.personal_id),
+        referenciaTipo,
+        rolRow.periodo_inicio,
+        rolRow.periodo_fin,
+        valor,
+        req.user.id
+      ]
+    );
+
+    await client.query(
+      `INSERT INTO rol_ajustes_detalle(
+        rol_mensual_id, ajuste_id, aplicacion_id, tipo, detalle, monto
+      ) VALUES($1,$2,$3,$4,$5,$6)`,
+      [rolId, Number(ajuste.rows[0].id), Number(aplicacion.rows[0].id), tipo, detalle, valor]
+    );
+
+    await client.query(
+      `INSERT INTO roles_mensuales_detalle(rol_mensual_id, seccion, concepto, valor)
+       VALUES($1,$2,$3,$4)`,
+      [rolId, seccion, concepto, valor]
+    );
+
+    const deltaIngresos = tipo === 'sobrante' ? valor : 0;
+    const deltaEgresos = tipo === 'faltante' ? valor : 0;
+
+    const updatedRole = await client.query(
+      `UPDATE roles_mensuales
+       SET total_ingresos = total_ingresos + $1,
+           total_egresos = total_egresos + $2,
+           neto_pagar = (total_ingresos + $1) - (total_egresos + $2),
+           updated_at = now()
+       WHERE id = $3
+       RETURNING *`,
+      [deltaIngresos, deltaEgresos, rolId]
+    );
+
+    await client.query('COMMIT');
+
+    await auditLog(req.user.id, 'ajustes_personal', Number(ajuste.rows[0].id), 'create_from_rol_atajo', {
+      rol_id: rolId,
+      tipo_periodo: rolRow.tipo_periodo,
+      tipo,
+      detalle,
+      valor
+    });
+
+    await auditLog(req.user.id, 'roles_mensuales', rolId, 'atajo_ajuste', {
+      ajuste_id: Number(ajuste.rows[0].id),
+      tipo,
+      detalle,
+      valor
+    });
+
+    res.status(201).json({
+      ok: true,
+      ajuste: ajuste.rows[0],
+      rol: updatedRole.rows[0]
+    });
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      console.error(rollbackErr);
+    }
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission('roles_mensuales', 'can_modify'), async (req, res) => {
   try {
-    const { periodo_mes } = req.body;
+    const { periodo_mes, tipo_periodo, personal_id } = req.body;
+    const tipoPeriodo = hasValue(tipo_periodo) ? String(tipo_periodo).trim().toLowerCase() : 'mensual';
+    
+    if (!['mensual', 'quincena'].includes(tipoPeriodo)) {
+      return res.status(400).json({ error: 'tipo_periodo invalido (mensual o quincena)' });
+    }
     
     if (!periodo_mes || !/^\d{4}-\d{2}$/.test(periodo_mes)) {
       return res.status(400).json({ error: 'periodo_mes debe tener formato YYYY-MM' });
@@ -3019,18 +3429,31 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
     
     // Calcular inicio y fin del mes
     const [year, month] = periodo_mes.split('-').map(Number);
-    const periodo_inicio = `${periodo_mes}-01`;
     const lastDay = new Date(year, month, 0).getDate();
-    const periodo_fin = `${periodo_mes}-${String(lastDay).padStart(2, '0')}`;
+    const periodo_inicio = tipoPeriodo === 'quincena'
+      ? `${periodo_mes}-01`
+      : `${periodo_mes}-01`;
+    const periodo_fin = tipoPeriodo === 'quincena'
+      ? `${periodo_mes}-15`
+      : `${periodo_mes}-${String(lastDay).padStart(2, '0')}`;
     
     // Obtener personal afiliado al IESS
-    const personal = await db.query(
+    const paramsPersonal = [];
+    let queryPersonal =
       `SELECT id, nombre, apellidos, documento, sueldo_iess, sueldo_real,
-              descuenta_iess, cobra_decimo_tercero, cobra_decimo_cuarto, cobra_fondo_reserva
+              descuenta_iess, cobra_decimo_tercero, cobra_decimo_cuarto, cobra_fondo_reserva,
+              COALESCE(modalidad_pago_iess, 'mensual') AS modalidad_pago_iess
        FROM personal
-       WHERE afiliado_iess = TRUE AND activo = TRUE
-       ORDER BY nombre ASC`
-    );
+       WHERE afiliado_iess = TRUE AND activo = TRUE`;
+
+    if (hasValue(personal_id)) {
+      queryPersonal += ` AND id = $1`;
+      paramsPersonal.push(Number(personal_id));
+    }
+
+    queryPersonal += ` ORDER BY nombre ASC`;
+
+    const personal = await db.query(queryPersonal, paramsPersonal);
     
     if (personal.rowCount === 0) {
       return res.status(400).json({ error: 'no hay personal afiliado al IESS' });
@@ -3039,36 +3462,78 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
     const rolesGenerados = [];
     
     for (const p of personal.rows) {
+      const modalidad = String(p.modalidad_pago_iess || 'mensual').toLowerCase();
+
+      // Quincena solo para personal quincenal
+      if (tipoPeriodo === 'quincena' && modalidad !== 'quincenal') continue;
+
       // Verificar si ya existe rol para este personal en este periodo
       const existe = await db.query(
-        'SELECT id FROM roles_mensuales WHERE personal_id = $1 AND periodo_mes = $2',
-        [p.id, periodo_mes]
+        `SELECT id
+         FROM roles_mensuales
+         WHERE personal_id = $1
+           AND periodo_mes = $2
+           AND LOWER(COALESCE(tipo_periodo, 'mensual')) = $3`,
+        [p.id, periodo_mes, tipoPeriodo]
       );
       
       if (existe.rowCount > 0) continue;
       
       const sueldoIess = Number(p.sueldo_iess || 0);
       const sueldoReal = Number(p.sueldo_real || 0);
+      const factorQuincena = 0.5;
       
-      let total_ingresos = sueldoReal;
+      let total_ingresos = tipoPeriodo === 'quincena'
+        ? sueldoReal * factorQuincena
+        : sueldoReal;
       let total_egresos = 0;
+      let rolQuincenaRefId = null;
       
-      // Calcular aportes IESS si descuenta
-      if (p.descuenta_iess) {
+      // Calcular aportes IESS solo en mensual (evitar duplicación en quincena)
+      if (tipoPeriodo === 'mensual' && p.descuenta_iess) {
         const aportePersonal = sueldoIess * 0.0945; // 9.45%
         total_egresos += aportePersonal;
       }
+
+      // Para modalidad quincenal, el rol mensual solo se genera cuando la quincena del periodo ya fue pagada
+      if (tipoPeriodo === 'mensual' && modalidad === 'quincenal') {
+        const quincenaPagada = await db.query(
+          `SELECT id, estado, neto_pagar
+           FROM roles_mensuales
+           WHERE personal_id = $1
+             AND periodo_mes = $2
+             AND LOWER(COALESCE(tipo_periodo, 'mensual')) = 'quincena'
+           ORDER BY id DESC
+           LIMIT 1`,
+          [p.id, periodo_mes]
+        );
+
+        const quincenaRow = quincenaPagada.rows[0] || null;
+        const estadoQuincena = String(quincenaRow?.estado || '').toLowerCase();
+
+        if (!quincenaRow || estadoQuincena !== 'pagado') {
+          if (hasValue(personal_id)) {
+            return res.status(409).json({
+              error: 'Para generar rol mensual de personal quincenal, primero debe pagar la quincena del periodo.'
+            });
+          }
+          continue;
+        }
+
+        rolQuincenaRefId = Number(quincenaRow.id);
+      }
       
       const neto_pagar = total_ingresos - total_egresos;
-      
-      // Crear rol mensual
+
+      // Crear rol
       const rolResult = await db.query(
         `INSERT INTO roles_mensuales(
           periodo_mes, periodo_inicio, periodo_fin, personal_id,
+          tipo_periodo, rol_quincena_ref_id,
           estado, total_ingresos, total_egresos, neto_pagar, generated_by
-        ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *`,
-        [periodo_mes, periodo_inicio, periodo_fin, p.id, 'borrador', 
+        [periodo_mes, periodo_inicio, periodo_fin, p.id, tipoPeriodo, rolQuincenaRefId, 'borrador', 
          total_ingresos, total_egresos, neto_pagar, req.user.id]
       );
       
@@ -3077,12 +3542,16 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
       // Insertar detalle de ingresos
       await db.query(
         `INSERT INTO roles_mensuales_detalle(rol_mensual_id, seccion, concepto, valor)
-         VALUES($1, 'ingresos', 'Sueldo', $2)`,
-        [rolId, sueldoReal]
+         VALUES($1, 'ingresos', $2, $3)`,
+        [
+          rolId,
+          tipoPeriodo === 'quincena' ? 'Sueldo primera quincena (50%)' : 'Sueldo mensual',
+          tipoPeriodo === 'quincena' ? sueldoReal * factorQuincena : sueldoReal
+        ]
       );
-      
-      // Insertar detalle de egresos
-      if (p.descuenta_iess) {
+
+      // Insertar detalle de egresos IESS solo en mensual
+      if (tipoPeriodo === 'mensual' && p.descuenta_iess) {
         const aportePersonal = sueldoIess * 0.0945;
         await db.query(
           `INSERT INTO roles_mensuales_detalle(rol_mensual_id, seccion, concepto, valor)
@@ -3090,42 +3559,112 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
           [rolId, aportePersonal]
         );
       }
-      
-      // Aplicar ajustes mensuales activos
-      // Excluir ajustes de cuota única que ya fueron aplicados en un rol anterior
+
+      if (tipoPeriodo === 'mensual' && modalidad === 'quincenal' && rolQuincenaRefId) {
+        const [quincenaRef, ajustesQuincena] = await Promise.all([
+          db.query(
+            `SELECT neto_pagar
+             FROM roles_mensuales
+             WHERE id = $1`,
+            [rolQuincenaRefId]
+          ),
+          db.query(
+            `SELECT rad.tipo, rad.detalle, rad.monto
+             FROM rol_ajustes_detalle rad
+             WHERE rad.rol_mensual_id = $1
+             ORDER BY rad.id ASC`,
+            [rolQuincenaRefId]
+          )
+        ]);
+
+        // Se descuenta exactamente lo pagado en quincena (neto pagado)
+        const netoQuincenaPagada = Number(quincenaRef.rows[0]?.neto_pagar || 0);
+
+        if (netoQuincenaPagada > 0) {
+          total_egresos += netoQuincenaPagada;
+          await db.query(
+            `INSERT INTO roles_mensuales_detalle(rol_mensual_id, seccion, concepto, valor)
+             VALUES($1, 'egresos', 'Descuento pago primera quincena', $2)`,
+            [rolId, netoQuincenaPagada]
+          );
+        }
+
+        for (const aq of ajustesQuincena.rows) {
+          const tipoAjuste = String(aq.tipo || '').toLowerCase();
+          const detalleAjuste = String(aq.detalle || '').trim();
+          const montoAjuste = Number(aq.monto || 0);
+          if (!Number.isFinite(montoAjuste) || montoAjuste <= 0) continue;
+
+          if (tipoAjuste !== 'sobrante' && tipoAjuste !== 'faltante') {
+            continue;
+          }
+
+          // En mensual se vuelven a aplicar los ajustes de quincena para reflejar el consolidado final
+          if (tipoAjuste === 'sobrante') {
+            total_ingresos += montoAjuste;
+          } else {
+            total_egresos += montoAjuste;
+          }
+
+          const seccion = tipoAjuste === 'sobrante' ? 'ingresos' : 'egresos';
+          const concepto = detalleAjuste
+            ? `${tipoAjuste === 'sobrante' ? 'Sobrante' : 'Faltante'} de quincena: ${detalleAjuste}`
+            : `${tipoAjuste === 'sobrante' ? 'Sobrante' : 'Faltante'} de quincena`;
+
+          await db.query(
+            `INSERT INTO roles_mensuales_detalle(rol_mensual_id, seccion, concepto, valor)
+             VALUES($1, $2, $3, $4)`,
+            [rolId, seccion, concepto, montoAjuste]
+          );
+        }
+      }
+
+      // Aplicar ajustes activos según tipo de período
+      // Excluir ajustes de cuota única que ya fueron aplicados en un rol anterior del mismo tipo/rango
+      const frecuenciaObjetivo = tipoPeriodo === 'quincena' ? 'quincenal' : 'mensual';
       const ajustes = await db.query(
         `SELECT id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, cuota_actual
          FROM ajustes_personal
          WHERE personal_id = $1 
            AND estado = 'activo'
-           AND frecuencia = 'mensual'
+           AND LOWER(COALESCE(frecuencia, 'mensual')) = $3
            AND fecha_inicio <= $2
            AND (
              en_cuotas = TRUE
              OR NOT EXISTS (
                SELECT 1 FROM ajustes_aplicaciones aa
                WHERE aa.ajuste_id = ajustes_personal.id
+                 AND aa.referencia_tipo = $4
              )
            )`,
-        [p.id, periodo_fin]
+        [p.id, periodo_fin, frecuenciaObjetivo, tipoPeriodo === 'quincena' ? 'rol_quincena' : 'rol_mensual']
       );
-      
+
       for (const ajuste of ajustes.rows) {
-        const montoAplicar = ajuste.en_cuotas 
+        const montoBase = ajuste.en_cuotas 
           ? Number(ajuste.valor_total) / Number(ajuste.cantidad_cuotas)
           : Number(ajuste.valor_total);
-        
+        const montoAplicar = montoBase;
+
         // Crear aplicación
         const aplicacion = await db.query(
           `INSERT INTO ajustes_aplicaciones(
             ajuste_id, personal_id, referencia_tipo, referencia_inicio, referencia_fin,
             cuota_numero, monto_aplicado, created_by
-          ) VALUES($1, $2, 'rol_mensual', $3, $4, $5, $6, $7)
+          ) VALUES($1, $2, $3, $4, $5, $6, $7, $8)
           RETURNING id`,
-          [ajuste.id, p.id, periodo_inicio, periodo_fin, 
-           ajuste.cuota_actual + 1, montoAplicar, req.user.id]
+          [
+            ajuste.id,
+            p.id,
+            tipoPeriodo === 'quincena' ? 'rol_quincena' : 'rol_mensual',
+            periodo_inicio,
+            periodo_fin,
+            ajuste.cuota_actual + 1,
+            montoAplicar,
+            req.user.id
+          ]
         );
-        
+
         // Insertar en detalle del rol
         await db.query(
           `INSERT INTO rol_ajustes_detalle(
@@ -3133,49 +3672,49 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
           ) VALUES($1, $2, $3, $4, $5, $6)`,
           [rolId, ajuste.id, aplicacion.rows[0].id, ajuste.tipo, ajuste.detalle, montoAplicar]
         );
-        
+
         // Aplicar ajuste a los totales: sobrantes suman a ingresos, faltantes suman a egresos
         if (ajuste.tipo === 'sobrante') {
           total_ingresos += montoAplicar;
         } else if (ajuste.tipo === 'faltante') {
           total_egresos += montoAplicar;
         }
-        
-        // Actualizar cuota actual del ajuste
-        const nuevaCuotaActual = ajuste.cuota_actual + 1;
-        await db.query(
-          'UPDATE ajustes_personal SET cuota_actual = $1 WHERE id = $2',
-          [nuevaCuotaActual, ajuste.id]
-        );
-        
-        // Si no es en cuotas (aplicación única) o es la última cuota, marcar como finalizado
-        if (!ajuste.en_cuotas || (ajuste.en_cuotas && nuevaCuotaActual >= ajuste.cantidad_cuotas)) {
+
+        // Actualizar cuota actual del ajuste solo al cerrar ciclo mensual
+        if (tipoPeriodo === 'mensual') {
+          const nuevaCuotaActual = ajuste.cuota_actual + 1;
           await db.query(
-            'UPDATE ajustes_personal SET estado = $1 WHERE id = $2',
-            ['finalizado', ajuste.id]
+            'UPDATE ajustes_personal SET cuota_actual = $1 WHERE id = $2',
+            [nuevaCuotaActual, ajuste.id]
           );
         }
       }
-      
+
       // Recalcular neto_pagar después de aplicar ajustes
       const neto_pagar_final = total_ingresos - total_egresos;
-      
-      // Actualizar totales del rol mensual
-      await db.query(
+
+      // Actualizar totales del rol
+      const updatedRole = await db.query(
         `UPDATE roles_mensuales
-         SET total_ingresos = $1, total_egresos = $2, neto_pagar = $3
-         WHERE id = $4`,
-        [total_ingresos, total_egresos, neto_pagar_final, rolId]
+         SET rol_quincena_ref_id = $1,
+             total_ingresos = $2,
+             total_egresos = $3,
+             neto_pagar = $4
+         WHERE id = $5
+         RETURNING *`,
+        [rolQuincenaRefId, total_ingresos, total_egresos, neto_pagar_final, rolId]
       );
-      
-      rolesGenerados.push(rolResult.rows[0]);
+
+      rolesGenerados.push(updatedRole.rows[0]);
     }
-    
+
     await auditLog(req.user.id, 'roles_mensuales', null, 'generar', {
       periodo_mes,
+      tipo_periodo: tipoPeriodo,
+      personal_id: hasValue(personal_id) ? Number(personal_id) : null,
       cantidad: rolesGenerados.length
     });
-    
+
     res.json({ 
       ok: true, 
       mensaje: `${rolesGenerados.length} roles generados`,
@@ -3188,60 +3727,96 @@ app.post('/api/roles-mensuales/generar', authMiddleware, requireModulePermission
 });
 
 app.delete('/api/roles-mensuales', authMiddleware, requireModulePermission('roles_mensuales', 'can_delete'), async (req, res) => {
+  const client = await db.pool.connect();
   try {
-    const { periodo_mes } = req.query;
+    const { periodo_mes, tipo_periodo } = req.query;
+    const tipoPeriodo = hasValue(tipo_periodo) ? String(tipo_periodo).trim().toLowerCase() : 'mensual';
+    if (!['mensual', 'quincena'].includes(tipoPeriodo)) {
+      return res.status(400).json({ error: 'tipo_periodo invalido (mensual o quincena)' });
+    }
     
     if (!periodo_mes) {
       return res.status(400).json({ error: 'periodo_mes es requerido' });
     }
     
-    // Obtener ajustes que se van a eliminar para revertir cuota_actual
-    const ajustesAEliminar = await db.query(
-      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+    await client.query('BEGIN');
+
+    const unpaidRoles = await client.query(
+      `SELECT rm.id
+       FROM roles_mensuales rm
+       LEFT JOIN pagos_roles_mensuales prm ON prm.rol_mensual_id = rm.id
+       WHERE rm.periodo_mes = $1
+         AND LOWER(COALESCE(rm.tipo_periodo, 'mensual')) = $2
+         AND prm.id IS NULL`,
+      [periodo_mes, tipoPeriodo]
+    );
+
+    if (unpaidRoles.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay roles no pagados para eliminar en este periodo' });
+    }
+
+    const roleIds = unpaidRoles.rows.map((row) => Number(row.id)).filter((value) => Number.isInteger(value));
+
+    const ajustesAEliminar = await client.query(
+      `SELECT DISTINCT aa.id AS aplicacion_id, aa.ajuste_id
        FROM ajustes_aplicaciones aa
        JOIN rol_ajustes_detalle rad ON rad.aplicacion_id = aa.id
        JOIN roles_mensuales rm ON rm.id = rad.rol_mensual_id
-       WHERE rm.periodo_mes = $1`,
-      [periodo_mes]
+       WHERE rad.rol_mensual_id = ANY($1::int[])
+         AND LOWER(COALESCE(rm.tipo_periodo, 'mensual')) = 'mensual'`,
+      [roleIds]
     );
 
-    // Revertir cuota_actual de los ajustes antes de borrar
-    for (const ajuste of ajustesAEliminar.rows) {
-      await db.query(
+    const ajusteIds = [...new Set(ajustesAEliminar.rows.map((row) => Number(row.ajuste_id)).filter((value) => Number.isInteger(value)))];
+    const aplicacionIds = [...new Set(ajustesAEliminar.rows.map((row) => Number(row.aplicacion_id)).filter((value) => Number.isInteger(value)))];
+
+    for (const ajusteId of ajusteIds) {
+      await client.query(
         `UPDATE ajustes_personal
-         SET cuota_actual = cuota_actual - 1,
-             estado = CASE 
-               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+         SET cuota_actual = GREATEST(cuota_actual - 1, 0),
+             estado = CASE
+               WHEN estado = 'finalizado' THEN 'activo'
                ELSE estado
              END
          WHERE id = $1`,
-        [ajuste.ajuste_id]
+        [ajusteId]
       );
     }
 
-    // Borrar ajustes_aplicaciones de roles mensuales del periodo
-    await db.query(
-      `DELETE FROM ajustes_aplicaciones
-       WHERE referencia_tipo = 'rol_mensual'
-         AND referencia_inicio >= $1::date
-         AND referencia_fin < ($1::date + INTERVAL '1 month')`,
-      [periodo_mes + '-01']
+    const result = await client.query(
+      'DELETE FROM roles_mensuales WHERE id = ANY($1::int[]) RETURNING id',
+      [roleIds]
     );
-    
-    const result = await db.query(
-      'DELETE FROM roles_mensuales WHERE periodo_mes = $1 RETURNING id',
-      [periodo_mes]
-    );
+
+    if (aplicacionIds.length > 0) {
+      await client.query(
+        `DELETE FROM ajustes_aplicaciones
+         WHERE id = ANY($1::int[])
+           AND referencia_tipo IN ('rol_mensual', 'rol_quincena')`,
+        [aplicacionIds]
+      );
+    }
+
+    await client.query('COMMIT');
     
     await auditLog(req.user.id, 'roles_mensuales', null, 'delete_periodo', {
       periodo_mes,
+      tipo_periodo: tipoPeriodo,
       cantidad: result.rowCount
     });
     
     res.json({ ok: true, eliminados: result.rowCount });
   } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      console.error(rollbackErr);
+    }
     console.error(err);
     res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -3276,56 +3851,81 @@ app.put('/api/roles-mensuales/:id/estado', authMiddleware, requireModulePermissi
 });
 
 app.delete('/api/roles-mensuales/:id', authMiddleware, requireModulePermission('roles_mensuales', 'can_delete'), async (req, res) => {
+  const client = await db.pool.connect();
   try {
     const id = Number(req.params.id);
     
-    const exists = await db.query('SELECT id FROM roles_mensuales WHERE id = $1', [id]);
+    await client.query('BEGIN');
+
+    const exists = await client.query('SELECT id FROM roles_mensuales WHERE id = $1', [id]);
     if (exists.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'rol mensual no encontrado' });
     }
 
+    const paymentExists = await client.query(
+      'SELECT id FROM pagos_roles_mensuales WHERE rol_mensual_id = $1 LIMIT 1',
+      [id]
+    );
+    if (paymentExists.rowCount > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'No se puede eliminar un rol mensual pagado' });
+    }
+
     // Obtener ajustes que se van a eliminar para revertir cuota_actual
-    const ajustesAEliminar = await db.query(
-      `SELECT DISTINCT aa.ajuste_id, aa.cuota_numero
+    const ajustesAEliminar = await client.query(
+      `SELECT DISTINCT aa.id AS aplicacion_id, aa.ajuste_id
        FROM ajustes_aplicaciones aa
        JOIN rol_ajustes_detalle rad ON rad.aplicacion_id = aa.id
-       WHERE rad.rol_mensual_id = $1`,
+       JOIN roles_mensuales rm ON rm.id = rad.rol_mensual_id
+       WHERE rad.rol_mensual_id = $1
+         AND LOWER(COALESCE(rm.tipo_periodo, 'mensual')) = 'mensual'`,
       [id]
     );
 
+    const ajusteIds = [...new Set(ajustesAEliminar.rows.map((row) => Number(row.ajuste_id)).filter((value) => Number.isInteger(value)))];
+    const aplicacionIds = [...new Set(ajustesAEliminar.rows.map((row) => Number(row.aplicacion_id)).filter((value) => Number.isInteger(value)))];
+
     // Revertir cuota_actual de los ajustes antes de borrar
-    for (const ajuste of ajustesAEliminar.rows) {
-      await db.query(
+    for (const ajusteId of ajusteIds) {
+      await client.query(
         `UPDATE ajustes_personal
-         SET cuota_actual = cuota_actual - 1,
-             estado = CASE 
-               WHEN estado = 'finalizado' AND en_cuotas = TRUE THEN 'activo'
+         SET cuota_actual = GREATEST(cuota_actual - 1, 0),
+             estado = CASE
+               WHEN estado = 'finalizado' THEN 'activo'
                ELSE estado
              END
          WHERE id = $1`,
-        [ajuste.ajuste_id]
+        [ajusteId]
       );
     }
 
-    // Borrar ajustes_aplicaciones asociadas
-    await db.query(
-      `DELETE FROM ajustes_aplicaciones
-       WHERE id IN (
-         SELECT aplicacion_id
-         FROM rol_ajustes_detalle
-         WHERE rol_mensual_id = $1
-       )`,
-      [id]
-    );
-    
-    await db.query('DELETE FROM roles_mensuales WHERE id = $1', [id]);
+    await client.query('DELETE FROM roles_mensuales WHERE id = $1', [id]);
+
+    if (aplicacionIds.length > 0) {
+      await client.query(
+        `DELETE FROM ajustes_aplicaciones
+         WHERE id = ANY($1::int[])
+           AND referencia_tipo IN ('rol_mensual', 'rol_quincena')`,
+        [aplicacionIds]
+      );
+    }
+
+    await client.query('COMMIT');
     
     await auditLog(req.user.id, 'roles_mensuales', id, 'delete', null);
     
     res.json({ ok: true });
   } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      console.error(rollbackErr);
+    }
     console.error(err);
     res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -3335,7 +3935,7 @@ app.get('/api/pagos/roles-mensuales', authMiddleware, requireModulePermission('p
     const r = await db.query(
       `SELECT prm.id, prm.rol_mensual_id, prm.fecha_pago, prm.banco_id, b.nombre AS banco_nombre,
               prm.comprobante, prm.monto, prm.estado, prm.estado_previo_rol, prm.created_at,
-              rm.periodo_mes, rm.personal_id, p.nombre AS personal_nombre, p.documento
+              rm.periodo_mes, rm.tipo_periodo, rm.personal_id, p.nombre AS personal_nombre, p.documento
        FROM pagos_roles_mensuales prm
        JOIN roles_mensuales rm ON rm.id = prm.rol_mensual_id
        JOIN personal p ON p.id = rm.personal_id
@@ -3361,7 +3961,7 @@ app.post('/api/pagos/roles-mensuales', authMiddleware, requireModulePermission('
     await client.query('BEGIN');
     
     const rol = await client.query(
-      'SELECT id, estado, neto_pagar FROM roles_mensuales WHERE id = $1',
+      'SELECT id, estado, neto_pagar, tipo_periodo FROM roles_mensuales WHERE id = $1',
       [Number(rol_mensual_id)]
     );
     
@@ -3402,6 +4002,20 @@ app.post('/api/pagos/roles-mensuales', authMiddleware, requireModulePermission('
       'UPDATE roles_mensuales SET estado = $1, updated_at = now(), paid_by = $2 WHERE id = $3',
       ['pagado', req.user.id, Number(rol_mensual_id)]
     );
+
+    if (String(rol.rows[0].tipo_periodo || 'mensual').toLowerCase() === 'mensual') {
+      await client.query(
+        `UPDATE ajustes_personal ap
+         SET estado = 'finalizado'
+         WHERE ap.id IN (
+           SELECT DISTINCT rad.ajuste_id
+           FROM rol_ajustes_detalle rad
+           WHERE rad.rol_mensual_id = $1
+         )
+           AND (ap.en_cuotas = FALSE OR ap.cuota_actual >= ap.cantidad_cuotas)`,
+        [Number(rol_mensual_id)]
+      );
+    }
     
     await client.query('COMMIT');
     
@@ -3483,6 +4097,8 @@ app.delete('/api/pagos/roles-mensuales/:id', authMiddleware, requireModulePermis
     
     const rolId = Number(pago.rows[0].rol_mensual_id);
     const estadoPrevio = String(pago.rows[0].estado_previo_rol || 'borrador');
+
+    const rolInfo = await client.query('SELECT id, tipo_periodo FROM roles_mensuales WHERE id = $1', [rolId]);
     
     await client.query('DELETE FROM pagos_roles_mensuales WHERE id = $1', [id]);
     
@@ -3490,6 +4106,20 @@ app.delete('/api/pagos/roles-mensuales/:id', authMiddleware, requireModulePermis
       'UPDATE roles_mensuales SET estado = $1, updated_at = now(), paid_by = NULL WHERE id = $2',
       [estadoPrevio, rolId]
     );
+
+    if (rolInfo.rowCount > 0 && String(rolInfo.rows[0].tipo_periodo || 'mensual').toLowerCase() === 'mensual') {
+      await client.query(
+        `UPDATE ajustes_personal ap
+         SET estado = 'activo'
+         WHERE ap.estado = 'finalizado'
+           AND ap.id IN (
+             SELECT DISTINCT rad.ajuste_id
+             FROM rol_ajustes_detalle rad
+             WHERE rad.rol_mensual_id = $1
+           )`,
+        [rolId]
+      );
+    }
     
     await client.query('COMMIT');
     
@@ -3551,7 +4181,7 @@ app.get('/api/reportes/pagos-estibador', authMiddleware, requireModulePermission
 
 app.get('/api/reportes/rutas-choferes', authMiddleware, requireModulePermission('reportes', 'can_access'), async (req, res) => {
   try {
-    const { desde, hasta, chofer_id, ruta_id } = req.query;
+    const { desde, hasta, chofer_id, ruta_id, tipo_ruta } = req.query;
     const validationError = validateDateRange(desde, hasta);
     if (validationError) return res.status(400).json({ error: validationError });
 
@@ -3566,6 +4196,11 @@ app.get('/api/reportes/rutas-choferes', authMiddleware, requireModulePermission(
     if (hasValue(ruta_id)) {
       params.push(Number(ruta_id));
       conditions.push(`r.id = $${params.length}`);
+    }
+
+    if (hasValue(tipo_ruta)) {
+      params.push(tipo_ruta);
+      conditions.push(`r.tipo = $${params.length}`);
     }
 
     const result = await db.query(
@@ -3989,23 +4624,10 @@ app.post('/api/drivers', authMiddleware, requireModulePermission('bitacora', 'ca
 app.get('/api/viajes/next-id', authMiddleware, requireModulePermission('bitacora', 'can_access'), async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT viaje_id FROM viajes ORDER BY id DESC LIMIT 1`
+      `SELECT COALESCE(MAX((regexp_match(viaje_id, '^V-(\\d+)'))[1]::int), 0) + 1 AS next_number
+       FROM viajes WHERE viaje_id ~ '^V-[0-9]+'`
     );
-
-    let nextNumber = 1;
-    if (result.rowCount > 0) {
-      const lastViajeId = String(result.rows[0].viaje_id || '');
-      // Extrae el número de viaje_id (ej: "V-1" -> 1, "V-50-R5" -> 50)
-      const match = lastViajeId.match(/V-(\d+)/);
-      if (match) {
-        const lastNumber = Number(match[1]);
-        if (Number.isInteger(lastNumber)) {
-          nextNumber = lastNumber + 1;
-        }
-      }
-    }
-
-    // Formatea: V-1, V-2, V-3, etc
+    const nextNumber = Number(result.rows?.[0]?.next_number || 1);
     const nextId = `V-${nextNumber}`;
     res.json({ next_id: nextId });
   } catch (err) {
@@ -4017,7 +4639,7 @@ app.get('/api/viajes/next-id', authMiddleware, requireModulePermission('bitacora
 // Fase 2: Bitacora de viajes
 app.get('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can_access'), async (req, res) => {
   try {
-    const { fecha, ruta_id, camion_id, conductor_id } = req.query;
+    const { fecha, ruta_id, camion_id, conductor_id, tipo_ruta } = req.query;
     
     let whereConditions = [];
     let params = [];
@@ -4046,6 +4668,12 @@ app.get('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can_
       params.push(Number(conductor_id));
       paramIndex++;
     }
+
+    if (hasValue(tipo_ruta)) {
+      whereConditions.push(`LOWER(COALESCE(rt.tipo, '')) = $${paramIndex}`);
+      params.push(String(tipo_ruta).trim().toLowerCase());
+      paramIndex++;
+    }
     
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
     
@@ -4054,7 +4682,7 @@ app.get('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can_
               v.conductor_id, p.nombre AS conductor_nombre,
               v.ruta_id, rt.nombre AS ruta_nombre, rt.tipo AS ruta_tipo,
               v.estado_viaje_id, ev.nombre AS estado_nombre,
-              v.tipo_operacion, v.km_inicial, v.km_final, v.observacion, v.created_at, v.updated_at,
+              v.tipo_operacion, v.km_inicial, v.km_final, v.observacion, v.activo, v.created_at, v.updated_at,
               (
                 SELECT JSON_AGG(JSON_BUILD_OBJECT('id', r2.id, 'nombre', r2.nombre, 'tipo', r2.tipo))
                 FROM viajes_rutas vr
@@ -4123,10 +4751,17 @@ app.post('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can
     }
 
     await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [940401]);
+
+    const nextViaje = await client.query(
+      `SELECT COALESCE(MAX((regexp_match(viaje_id, '^V-(\\d+)'))[1]::int), 0) + 1 AS next_number
+       FROM viajes WHERE viaje_id ~ '^V-[0-9]+'`
+    );
+    const viajeIdGenerado = `V-${Number(nextViaje.rows?.[0]?.next_number || 1)}`;
 
     // Validar datos del viaje
     const validationError = await validateViajeCoreData({
-      viaje_id: String(viaje_id),
+      viaje_id: viajeIdGenerado,
       fecha: fechaDesde,
       fecha_desde: fechaDesde,
       fecha_hasta: fechaHasta,
@@ -4150,7 +4785,7 @@ app.post('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
       [
-        String(viaje_id),
+        viajeIdGenerado,
         fechaDesde,
         fechaHasta,
         Number(camion_id),
@@ -4198,7 +4833,7 @@ app.post('/api/viajes', authMiddleware, requireModulePermission('bitacora', 'can
 app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    const exists = await db.query('SELECT id, viaje_id FROM viajes WHERE id=$1', [id]);
     if (exists.rowCount === 0) {
       return res.status(404).json({ error: 'viaje no encontrado' });
     }
@@ -4228,6 +4863,28 @@ app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', '
       observacion
     } = req.body;
 
+    const targetEstadoId = Number(estado_viaje_id);
+    const estadoViaje = await db.query('SELECT id, nombre FROM estados_viaje WHERE id = $1', [targetEstadoId]);
+    if (estadoViaje.rowCount === 0) {
+      return res.status(400).json({ error: 'estado de viaje invalido' });
+    }
+
+    const estadoNombre = String(estadoViaje.rows[0].nombre || '').trim().toLowerCase();
+    const cierraOValidaViaje = ['cerrado', 'validado', 'finalizado', 'liquidado', 'pagado'].includes(estadoNombre);
+
+    if (cierraOValidaViaje) {
+      const reconciliacion = await calcularReconciliacionViaticos(id);
+      if (reconciliacion.tiene_ruta_larga && Number(reconciliacion.diferencia) !== 0 && !reconciliacion.ya_reconciliado) {
+        return res.status(409).json({
+          error: 'no se puede cerrar/validar el viaje: existe diferencia entre transferencias y gastos de viaticos sin resolver'
+        });
+      }
+    }
+
+    if (hasValue(viaje_id) && String(viaje_id) !== String(exists.rows[0].viaje_id)) {
+      return res.status(400).json({ error: 'no se permite cambiar el codigo del viaje' });
+    }
+
     const fechaDesde = fecha_desde || fecha;
     const fechaHasta = fecha_hasta || fecha;
 
@@ -4251,7 +4908,7 @@ app.put('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora', '
        WHERE id=$12
        RETURNING *`,
       [
-        String(viaje_id),
+        String(exists.rows[0].viaje_id),
         fechaDesde,
         fechaHasta,
         Number(camion_id),
@@ -4293,7 +4950,7 @@ app.delete('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora'
   const client = await db.pool.connect();
   try {
     const id = Number(req.params.id);
-    const exists = await client.query('SELECT id, viaje_id, fecha, fecha_hasta FROM viajes WHERE id=$1', [id]);
+    const exists = await client.query('SELECT id, viaje_id, fecha, fecha_hasta, activo FROM viajes WHERE id=$1', [id]);
     if (exists.rowCount === 0) {
       return res.status(404).json({ error: 'viaje no encontrado' });
     }
@@ -4303,84 +4960,75 @@ app.delete('/api/viajes/:id', authMiddleware, requireModulePermission('bitacora'
       return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
     }
 
-    const liquidacionesPagadas = await client.query(
-      `SELECT DISTINCT l.id
-       FROM liquidacion_detalle ld
-       JOIN liquidaciones l ON l.id = ld.liquidacion_id
-       JOIN pagos pg ON pg.liquidacion_id = l.id
-       WHERE ld.viaje_id = $1
-         AND LOWER(COALESCE(pg.estado, '')) = 'pagado'`,
+    if (exists.rows[0].activo === false) {
+      return res.status(409).json({ error: 'el viaje ya esta inactivo' });
+    }
+
+    const updated = await client.query(
+      `UPDATE viajes
+       SET activo = FALSE,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING id`,
       [id]
     );
 
-    if (liquidacionesPagadas.rowCount > 0) {
-      return res.status(409).json({ error: 'no se puede eliminar: el viaje pertenece a una liquidacion pagada' });
-    }
-
-    await client.query('BEGIN');
-
-    const detallesEliminados = await client.query(
-      `DELETE FROM liquidacion_detalle
-       WHERE viaje_id = $1
-       RETURNING liquidacion_id`,
-      [id]
-    );
-
-    const liquidacionIds = [...new Set(detallesEliminados.rows.map((row) => Number(row.liquidacion_id)).filter((value) => Number.isInteger(value)))];
-
-    if (liquidacionIds.length > 0) {
-      await client.query(
-        `UPDATE liquidaciones l
-         SET total = COALESCE(src.total, 0)
-         FROM (
-           SELECT ld.liquidacion_id, COALESCE(SUM(ld.monto), 0) AS total
-           FROM liquidacion_detalle ld
-           WHERE ld.liquidacion_id = ANY($1::int[])
-           GROUP BY ld.liquidacion_id
-         ) src
-         WHERE l.id = src.liquidacion_id`,
-        [liquidacionIds]
-      );
-
-      await client.query(
-        `DELETE FROM liquidaciones l
-         WHERE l.id = ANY($1::int[])
-           AND NOT EXISTS (
-             SELECT 1
-             FROM liquidacion_detalle ld
-             WHERE ld.liquidacion_id = l.id
-           )`,
-        [liquidacionIds]
-      );
-    }
-
-    const deleted = await client.query('DELETE FROM viajes WHERE id=$1 RETURNING id', [id]);
-    if (deleted.rowCount === 0) {
-      await client.query('ROLLBACK');
+    if (updated.rowCount === 0) {
       return res.status(404).json({ error: 'viaje no encontrado' });
     }
 
-    await client.query('COMMIT');
-
-    await auditLog(req.user.id, 'viajes', id, 'delete', {
+    await auditLog(req.user.id, 'viajes', id, 'inactivate', {
       viaje_id: exists.rows[0].viaje_id,
       fecha_desde: exists.rows[0].fecha,
       fecha_hasta: exists.rows[0].fecha_hasta,
-      liquidacion_detalle_eliminado: detallesEliminados.rowCount
+      activo: false
     });
 
     res.json({ ok: true });
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch (_) {}
-    if (err?.code === '23503' || err?.code === '23001') {
-      return res.status(409).json({ error: 'no se puede eliminar: el viaje tiene registros asociados en liquidaciones' });
-    }
     console.error(err);
     res.status(500).json({ error: 'server error' });
   } finally {
     client.release();
+  }
+});
+
+app.put('/api/viajes/:id/activar', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await db.query('SELECT id, viaje_id, fecha, fecha_hasta, activo FROM viajes WHERE id = $1', [id]);
+    if (exists.rowCount === 0) {
+      return res.status(404).json({ error: 'viaje no encontrado' });
+    }
+
+    if (exists.rows[0].activo === true) {
+      return res.status(409).json({ error: 'el viaje ya esta activo' });
+    }
+
+    const updated = await db.query(
+      `UPDATE viajes
+       SET activo = TRUE,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING id`,
+      [id]
+    );
+
+    if (updated.rowCount === 0) {
+      return res.status(404).json({ error: 'viaje no encontrado' });
+    }
+
+    await auditLog(req.user.id, 'viajes', id, 'activate', {
+      viaje_id: exists.rows[0].viaje_id,
+      fecha_desde: exists.rows[0].fecha,
+      fecha_hasta: exists.rows[0].fecha_hasta,
+      activo: true
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -4498,6 +5146,380 @@ app.delete('/api/viajes/:id/personal/:personalId', authMiddleware, requireModule
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/viajes/:id/transferencias-viaticos', authMiddleware, requireModulePermission('bitacora', 'can_access'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const result = await db.query(
+      `SELECT tv.id, tv.viaje_id, tv.banco_id, b.nombre AS banco_nombre,
+              tv.valor, tv.comprobante, tv.created_at,
+              tv.origen_viaje_id, tv.es_arrastre
+       FROM viaje_transferencias_viaticos tv
+       LEFT JOIN bancos b ON b.id = tv.banco_id
+       WHERE tv.viaje_id = $1
+       ORDER BY tv.id DESC`,
+      [id]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.post('/api/viajes/:id/transferencias-viaticos', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const tieneRutaLarga = await viajeTieneRutaLarga(id);
+    if (!tieneRutaLarga) {
+      return res.status(409).json({ error: 'la transferencia de viaticos solo aplica para viajes con ruta larga' });
+    }
+
+    const { banco_id, valor, comprobante } = req.body;
+    if (!hasValue(banco_id)) return res.status(400).json({ error: 'banco_id es obligatorio' });
+    if (!hasValue(valor)) return res.status(400).json({ error: 'valor es obligatorio' });
+
+    const created = await db.query(
+      `INSERT INTO viaje_transferencias_viaticos(viaje_id, banco_id, valor, comprobante, created_by)
+       VALUES($1,$2,$3,$4,$5)
+       RETURNING *`,
+      [id, Number(banco_id), Number(valor), comprobante || null, req.user.id]
+    );
+
+    await auditLog(req.user.id, 'viaje_transferencias_viaticos', created.rows[0].id, 'create', {
+      viaje_id: id,
+      banco_id: Number(banco_id),
+      valor: Number(valor)
+    });
+
+    res.status(201).json(created.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.put('/api/viajes/:id/transferencias-viaticos/:transferenciaId', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const transferenciaId = Number(req.params.transferenciaId);
+    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const tieneRutaLarga = await viajeTieneRutaLarga(id);
+    if (!tieneRutaLarga) {
+      return res.status(409).json({ error: 'la transferencia de viaticos solo aplica para viajes con ruta larga' });
+    }
+
+    const transferencia = await db.query(
+      `SELECT id, viaje_id
+       FROM viaje_transferencias_viaticos
+       WHERE id = $1`,
+      [transferenciaId]
+    );
+    if (transferencia.rowCount === 0 || Number(transferencia.rows[0].viaje_id) !== id) {
+      return res.status(404).json({ error: 'transferencia no encontrada para el viaje' });
+    }
+
+    const { banco_id, valor, comprobante } = req.body;
+    if (!hasValue(banco_id)) return res.status(400).json({ error: 'banco_id es obligatorio' });
+    if (!hasValue(valor)) return res.status(400).json({ error: 'valor es obligatorio' });
+
+    const updated = await db.query(
+      `UPDATE viaje_transferencias_viaticos
+       SET banco_id = $1, valor = $2, comprobante = $3
+       WHERE id = $4
+       RETURNING *`,
+      [Number(banco_id), Number(valor), comprobante || null, transferenciaId]
+    );
+
+    await auditLog(req.user.id, 'viaje_transferencias_viaticos', transferenciaId, 'update', {
+      viaje_id: id,
+      banco_id: Number(banco_id),
+      valor: Number(valor)
+    });
+
+    res.json(updated.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.delete('/api/viajes/:id/transferencias-viaticos/:transferenciaId', authMiddleware, requireModulePermission('bitacora', 'can_delete'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const transferenciaId = Number(req.params.transferenciaId);
+    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const deleted = await db.query(
+      `DELETE FROM viaje_transferencias_viaticos
+       WHERE id = $1 AND viaje_id = $2
+       RETURNING id`,
+      [transferenciaId, id]
+    );
+
+    if (deleted.rowCount === 0) {
+      return res.status(404).json({ error: 'transferencia no encontrada para el viaje' });
+    }
+
+    await auditLog(req.user.id, 'viaje_transferencias_viaticos', transferenciaId, 'delete', { viaje_id: id });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.get('/api/viajes/:id/transferencias-viaticos/reconciliacion', authMiddleware, requireModulePermission('bitacora', 'can_access'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await db.query('SELECT id FROM viajes WHERE id=$1', [id]);
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const estado = await calcularReconciliacionViaticos(id);
+    res.json(estado);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.post('/api/viajes/:id/transferencias-viaticos/reconciliacion/faltante', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const exists = await client.query(
+      `SELECT v.id, v.conductor_id, p.nombre, p.apellidos
+       FROM viajes v
+       JOIN personal p ON p.id = v.conductor_id
+       WHERE v.id=$1`,
+      [id]
+    );
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const estado = await calcularReconciliacionViaticos(id, client);
+    if (!estado.tiene_ruta_larga) return res.status(409).json({ error: 'solo aplica a viajes de ruta larga' });
+    if (estado.ya_reconciliado) return res.status(409).json({ error: 'la diferencia de viaticos ya fue reconciliada' });
+    if (!(estado.diferencia > 0)) return res.status(409).json({ error: 'no existe excedente para registrar como faltante' });
+
+    await client.query('BEGIN');
+
+    const detalle = `Faltante por diferencia de viaticos viaje #${id}`;
+    const ajuste = await client.query(
+      `INSERT INTO ajustes_personal(personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, frecuencia, fecha_inicio, estado, created_by, viaje_id)
+       VALUES($1, 'faltante', $2, $3, FALSE, 1, 'semanal', CURRENT_DATE, 'activo', $4, $5)
+       RETURNING id`,
+      [Number(exists.rows[0].conductor_id), detalle, Number(estado.diferencia), req.user.id, id]
+    );
+
+    const rec = await client.query(
+      `INSERT INTO viaje_reconciliaciones_viaticos(viaje_id, accion, valor_diferencia, ajuste_personal_id, comprobante_origen, created_by)
+       VALUES($1, 'faltante', $2, $3, NULL, $4)
+       RETURNING *`,
+      [id, Number(estado.diferencia), ajuste.rows[0].id, req.user.id]
+    );
+
+    await client.query('COMMIT');
+
+    await auditLog(req.user.id, 'viaje_reconciliaciones_viaticos', rec.rows[0].id, 'create', {
+      viaje_id: id,
+      accion: 'faltante',
+      valor_diferencia: Number(estado.diferencia),
+      ajuste_personal_id: ajuste.rows[0].id
+    });
+
+    res.status(201).json(rec.rows[0]);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/viajes/:id/transferencias-viaticos/reconciliacion/sobrante', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const exists = await client.query(
+      `SELECT v.id, v.conductor_id
+       FROM viajes v
+       WHERE v.id=$1`,
+      [id]
+    );
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const estado = await calcularReconciliacionViaticos(id, client);
+    if (!estado.tiene_ruta_larga) return res.status(409).json({ error: 'solo aplica a viajes de ruta larga' });
+    if (estado.ya_reconciliado) return res.status(409).json({ error: 'la diferencia de viaticos ya fue reconciliada' });
+    if (!(estado.diferencia < 0)) return res.status(409).json({ error: 'no existe diferencia de gastos para registrar como sobrante' });
+
+    await client.query('BEGIN');
+
+    const valorSobrante = Math.abs(Number(estado.diferencia));
+    const detalle = `Sobrante por diferencia de viaticos viaje #${id}`;
+
+    const ajuste = await client.query(
+      `INSERT INTO ajustes_personal(personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, frecuencia, fecha_inicio, estado, created_by, viaje_id)
+       VALUES($1, 'sobrante', $2, $3, FALSE, 1, 'semanal', CURRENT_DATE, 'activo', $4, $5)
+       RETURNING id`,
+      [Number(exists.rows[0].conductor_id), detalle, valorSobrante, req.user.id, id]
+    );
+
+    const rec = await client.query(
+      `INSERT INTO viaje_reconciliaciones_viaticos(viaje_id, accion, valor_diferencia, ajuste_personal_id, comprobante_origen, created_by)
+       VALUES($1, 'sobrante', $2, $3, NULL, $4)
+       RETURNING *`,
+      [id, valorSobrante, ajuste.rows[0].id, req.user.id]
+    );
+
+    await client.query('COMMIT');
+
+    await auditLog(req.user.id, 'viaje_reconciliaciones_viaticos', rec.rows[0].id, 'create', {
+      viaje_id: id,
+      accion: 'sobrante',
+      valor_diferencia: valorSobrante,
+      ajuste_personal_id: ajuste.rows[0].id
+    });
+
+    res.status(201).json(rec.rows[0]);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/viajes/:id/transferencias-viaticos/reconciliacion/arrastrar', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
+  const client = await db.pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const exists = await client.query(
+      `SELECT v.id, v.conductor_id, v.fecha_hasta
+       FROM viajes v
+       WHERE v.id=$1`,
+      [id]
+    );
+    if (exists.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
+
+    const lock = await isViajeLocked(id);
+    if (lock.locked) return res.status(409).json({ error: `viaje bloqueado por estado ${lock.estado}` });
+
+    const estado = await calcularReconciliacionViaticos(id, client);
+    if (!estado.tiene_ruta_larga) return res.status(409).json({ error: 'solo aplica a viajes de ruta larga' });
+    if (estado.ya_reconciliado) return res.status(409).json({ error: 'la diferencia de viaticos ya fue reconciliada' });
+    if (!(estado.diferencia > 0)) return res.status(409).json({ error: 'no existe excedente para arrastrar' });
+
+    const comprobanteR = await client.query(
+      `SELECT comprobante
+       FROM viaje_transferencias_viaticos
+       WHERE viaje_id = $1 AND comprobante IS NOT NULL AND TRIM(comprobante) <> ''
+       ORDER BY id ASC
+       LIMIT 1`,
+      [id]
+    );
+    const comprobanteOrigen = comprobanteR.rowCount > 0 ? comprobanteR.rows[0].comprobante : null;
+
+    const bancoExcedente = await client.query(`SELECT id FROM bancos WHERE LOWER(nombre) = 'efectivo excedente' LIMIT 1`);
+    if (bancoExcedente.rowCount === 0) {
+      return res.status(500).json({ error: 'no existe banco "Efectivo Excedente"' });
+    }
+
+    const nextViaje = await client.query(
+      `SELECT id
+       FROM viajes
+       WHERE conductor_id = $1
+         AND id <> $2
+         AND (fecha > (SELECT fecha FROM viajes WHERE id = $2)
+              OR (fecha = (SELECT fecha FROM viajes WHERE id = $2) AND id > $2))
+       ORDER BY fecha ASC, id ASC
+       LIMIT 1`,
+      [Number(exists.rows[0].conductor_id), id]
+    );
+    if (nextViaje.rowCount === 0) return res.status(409).json({ error: 'no hay siguiente viaje del mismo chofer para arrastrar el excedente' });
+
+    const siguienteViajeId = Number(nextViaje.rows[0].id);
+    const nextLock = await isViajeLocked(siguienteViajeId);
+    if (nextLock.locked) return res.status(409).json({ error: `el viaje destino esta bloqueado por estado ${nextLock.estado}` });
+
+    const destinoTieneRutaLarga = await viajeTieneRutaLarga(siguienteViajeId);
+    if (!destinoTieneRutaLarga) {
+      return res.status(409).json({ error: 'el siguiente viaje del chofer no es de ruta larga' });
+    }
+
+    await client.query('BEGIN');
+
+    const createdTransfer = await client.query(
+      `INSERT INTO viaje_transferencias_viaticos(viaje_id, banco_id, valor, comprobante, created_by, origen_viaje_id, es_arrastre)
+       VALUES($1, $2, $3, $4, $5, $6, TRUE)
+       RETURNING *`,
+      [
+        siguienteViajeId,
+        Number(bancoExcedente.rows[0].id),
+        Number(estado.diferencia),
+        comprobanteOrigen,
+        req.user.id,
+        id
+      ]
+    );
+
+    const rec = await client.query(
+      `INSERT INTO viaje_reconciliaciones_viaticos(viaje_id, accion, valor_diferencia, viaje_destino_id, transferencia_destino_id, comprobante_origen, created_by)
+       VALUES($1, 'arrastre', $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [id, Number(estado.diferencia), siguienteViajeId, createdTransfer.rows[0].id, comprobanteOrigen, req.user.id]
+    );
+
+    await client.query('COMMIT');
+
+    await auditLog(req.user.id, 'viaje_reconciliaciones_viaticos', rec.rows[0].id, 'create', {
+      viaje_id: id,
+      accion: 'arrastre',
+      valor_diferencia: Number(estado.diferencia),
+      viaje_destino_id: siguienteViajeId,
+      transferencia_destino_id: createdTransfer.rows[0].id,
+      comprobante_origen: comprobanteOrigen
+    });
+
+    res.status(201).json({
+      reconciliacion: rec.rows[0],
+      transferencia_destino: createdTransfer.rows[0]
+    });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -4823,76 +5845,6 @@ app.delete('/api/viajes/:id/carga/:cargaId', authMiddleware, requireModulePermis
 
     await auditLog(req.user.id, 'viaje_carga', cargaId, 'delete', { viaje_id: id });
     res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
-  }
-});
-
-app.post('/api/viajes/:id/viaticos-ajuste', authMiddleware, requireModulePermission('bitacora', 'can_modify'), async (req, res) => {
-  try {
-    const viajeId = Number(req.params.id);
-    
-    // Verificar que el viaje existe
-    const viajeResult = await db.query(
-      `SELECT v.id, v.viaje_id, v.conductor_id, v.ruta_id
-       FROM viajes v
-       WHERE v.id=$1`,
-      [viajeId]
-    );
-    if (viajeResult.rowCount === 0) return res.status(404).json({ error: 'viaje no encontrado' });
-    
-    const viaje = viajeResult.rows[0];
-    if (!viaje.conductor_id) return res.status(400).json({ error: 'el viaje no tiene conductor asignado' });
-    
-    const { banco_id, valor_transferencia, comprobante, tipo_ajuste, diferencia } = req.body;
-    
-    if (!hasValue(banco_id)) return res.status(400).json({ error: 'banco_id es obligatorio' });
-    if (!hasValue(valor_transferencia)) return res.status(400).json({ error: 'valor_transferencia es obligatorio' });
-    if (!hasValue(tipo_ajuste)) return res.status(400).json({ error: 'tipo_ajuste es obligatorio' });
-    
-    const tipoNormalizado = String(tipo_ajuste).toLowerCase();
-    if (!['faltante', 'sobrante'].includes(tipoNormalizado)) {
-      return res.status(400).json({ error: 'tipo_ajuste debe ser "faltante" o "sobrante"' });
-    }
-    
-    // Crear el ajuste en la tabla ajustes_personal
-    const detalle = `${tipoNormalizado === 'faltante' ? 'Faltante' : 'Sobrante'} por ruta larga - Viaje #${viaje.viaje_id}`;
-    
-    const ajusteResult = await db.query(
-      `INSERT INTO ajustes_personal (
-        personal_id, tipo, detalle, valor_total, en_cuotas, cantidad_cuotas, 
-        frecuencia, fecha_inicio, estado, viaje_id, banco_id, comprobante_viatico
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING *`,
-      [
-        viaje.conductor_id,
-        tipoNormalizado,
-        detalle,
-        Number(diferencia || 0),
-        false,
-        1,
-        'mensual',
-        new Date().toISOString().slice(0, 10),
-        'activo',
-        viajeId,
-        Number(banco_id),
-        comprobante || null
-      ]
-    );
-    
-    if (ajusteResult.rowCount === 0) {
-      return res.status(500).json({ error: 'no se pudo crear el ajuste' });
-    }
-    
-    await auditLog(req.user.id, 'ajustes_personal', ajusteResult.rows[0].id, 'create', {
-      tipo: tipoNormalizado,
-      viaje_id: viajeId,
-      conductor_id: viaje.conductor_id,
-      diferencia: Number(diferencia || 0)
-    });
-    
-    res.status(201).json(ajusteResult.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'server error' });

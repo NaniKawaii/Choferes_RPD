@@ -219,12 +219,20 @@ CREATE TABLE IF NOT EXISTS viajes (
   km_inicial NUMERIC(12,2) NOT NULL DEFAULT 0,
   km_final NUMERIC(12,2) NOT NULL DEFAULT 0,
   observacion TEXT,
+  activo BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 ALTER TABLE viajes
 ADD COLUMN IF NOT EXISTS fecha_hasta DATE;
+
+ALTER TABLE viajes
+ADD COLUMN IF NOT EXISTS activo BOOLEAN NOT NULL DEFAULT TRUE;
+
+UPDATE viajes
+SET activo = TRUE
+WHERE activo IS NULL;
 
 UPDATE viajes
 SET fecha_hasta = fecha
@@ -508,3 +516,56 @@ CREATE TABLE IF NOT EXISTS viajes_rutas (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
   UNIQUE (viaje_id, ruta_id)
 );
+
+CREATE TABLE IF NOT EXISTS viaje_transferencias_viaticos (
+  id SERIAL PRIMARY KEY,
+  viaje_id INTEGER NOT NULL REFERENCES viajes(id) ON DELETE CASCADE,
+  banco_id INTEGER NOT NULL REFERENCES bancos(id) ON DELETE RESTRICT,
+  valor NUMERIC(12,2) NOT NULL,
+  comprobante TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Trazabilidad de arrastre de excedentes
+ALTER TABLE viaje_transferencias_viaticos
+  ADD COLUMN IF NOT EXISTS origen_viaje_id INTEGER REFERENCES viajes(id) ON DELETE SET NULL;
+
+ALTER TABLE viaje_transferencias_viaticos
+  ADD COLUMN IF NOT EXISTS es_arrastre BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Registro de reconciliaciones de viáticos (controla que solo se resuelva una vez por viaje)
+CREATE TABLE IF NOT EXISTS viaje_reconciliaciones_viaticos (
+  id SERIAL PRIMARY KEY,
+  viaje_id INTEGER NOT NULL REFERENCES viajes(id) ON DELETE CASCADE,
+  accion TEXT NOT NULL,  -- 'faltante', 'sobrante', 'arrastre'
+  valor_diferencia NUMERIC(12,2) NOT NULL,
+  ajuste_personal_id INTEGER REFERENCES ajustes_personal(id) ON DELETE SET NULL,
+  viaje_destino_id INTEGER REFERENCES viajes(id) ON DELETE SET NULL,
+  transferencia_destino_id INTEGER REFERENCES viaje_transferencias_viaticos(id) ON DELETE SET NULL,
+  comprobante_origen TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  UNIQUE (viaje_id)
+);
+
+-- Banco especial para registrar arrastres de excedentes de viáticos
+INSERT INTO bancos(nombre, activo) VALUES ('Efectivo Excedente', TRUE) ON CONFLICT (nombre) DO NOTHING;
+
+-- Modalidad de pago IESS por empleado: mensual o quincenal (primera quincena)
+ALTER TABLE personal
+  ADD COLUMN IF NOT EXISTS modalidad_pago_iess TEXT NOT NULL DEFAULT 'mensual';
+
+UPDATE personal
+SET modalidad_pago_iess = 'mensual'
+WHERE modalidad_pago_iess IS NULL OR TRIM(modalidad_pago_iess) = '';
+
+-- Extensión de roles IESS para soportar primera quincena y consolidación mensual
+ALTER TABLE roles_mensuales
+  ADD COLUMN IF NOT EXISTS tipo_periodo TEXT NOT NULL DEFAULT 'mensual';
+
+ALTER TABLE roles_mensuales
+  ADD COLUMN IF NOT EXISTS rol_quincena_ref_id INTEGER REFERENCES roles_mensuales(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_roles_mensuales_personal_periodo_tipo
+  ON roles_mensuales(personal_id, periodo_mes, tipo_periodo);
